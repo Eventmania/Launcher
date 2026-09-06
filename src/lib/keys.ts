@@ -163,6 +163,15 @@ export function useTvNav(o: TvNavOpts) {
   };
 }
 
+/* Keep the focused cell visible inside scrollable containers/forms. */
+export function useFocusScroll(r: number, c: number, active = true) {
+  useEffect(() => {
+    if (!active) return;
+    const el = document.querySelector(`[data-cell="${r}:${c}"]`);
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }, [r, c, active]);
+}
+
 /* Per-tab focus memory so returning to a tab restores where you were. */
 const LAST_FOCUS: Record<string, [number, number]> = {};
 export function rememberFocus(tab: string, r: number, c: number) {

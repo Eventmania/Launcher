@@ -7,6 +7,8 @@ import type {
   TvShow,
   WikiFilm,
 } from "../data";
+import type { LocalFile } from "./local";
+import type { NetStream } from "../data";
 
 export type Layer =
   | null
@@ -17,7 +19,9 @@ export type Layer =
   | { type: "show"; show: TvShow }
   | { type: "episode"; ep: TonightItem }
   | { type: "wiki"; wiki: WikiFilm }
-  | { type: "player"; film: PdFilm }
+  | { type: "player"; title: string; sub: string; progressKey: string; sources: string[]; poster?: string | null; external?: { label: string; url: string } }
+  | { type: "music"; index: number; tracks: { track: string; artist: string; art: string; preview: string; id: string }[] }
+  | { type: "localfile"; file: LocalFile }
   | { type: "appOptions"; app: AppDef }
   | { type: "addApp"; app?: AppDef }
   | { type: "launch"; app: AppDef }
@@ -36,6 +40,8 @@ export interface UIApi {
   openEpisode: (e: TonightItem) => void;
   openWiki: (w: WikiFilm) => void;
   playFilm: (f: PdFilm) => void;
+  playLocal: (f: LocalFile) => void;
+  playStream: (st: NetStream) => void;
   openSearch: (seed?: string) => void;
   openSettings: () => void;
   openAddApp: (a?: AppDef) => void;

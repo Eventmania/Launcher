@@ -1,30 +1,45 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ACCENTS,
   CATEGORIES,
+  REGIONS,
   WALLS,
   fmtDur,
   type AppDef,
   type AppKind,
+  type MusicTrack,
   type PdFilm,
   type TonightItem,
   type TvShow,
   type WikiFilm,
 } from "../data";
-import { archivePage, searchShows, searchWiki, wikiSummary } from "../lib/catalog";
-import { useTvKeys, useTvNav } from "../lib/keys";
+import { Icon } from "../icons";
+import {
+  archivePage,
+  searchMusic,
+  searchShows,
+  searchWiki,
+  wikiSummary,
+} from "../lib/catalog";
+import { useFocusScroll, useTvKeys, useTvNav } from "../lib/keys";
+import {
+  listFolders,
+  pickFolder,
+  removeFolder,
+  type FolderState,
+} from "../lib/local";
 import { sfx } from "../lib/sound";
 import { useStore } from "../lib/store";
 import { useUI } from "../lib/ui";
-import { cx, detectKind, fireProtocol, shade } from "../lib/util";
-import { Icon, Logo } from "../icons";
-import { Cell, FilmCard, ShowCard, WikiCard } from "./cards";
+import { cx, detectKind, fireProtocol } from "../lib/util";
+import {
+  Cell,
+  CloseBtn,
+  FilmCard,
+  ShowCard,
+  TrackCard,
+  WikiCard,
+} from "./cards";
 
 const ICON_CHOICES = [
   "globe", "play", "film", "music", "gamepad", "chat", "code", "note",
@@ -37,1137 +52,1225 @@ const TILE_COLORS = [
 const WALL_NAMES = ["Ember", "Forest", "Void"];
 const KIND_LABEL: Record<AppKind, string> = {
   url: "Opens in a new browser tab",
-  protocol: "Asks Windows to launch a program",
-  sim: "Runs inside NovaDeck (Esc returns)",
+  protocol: "Asks Windows to launch a program (steam://, vscode://, custom myapp://)",
+  sim: "Runs inside NovaDeck — Esc returns to the launcher",
 };
 
-function Shell({
+function OverlayShell({
   children,
-  wide = false,
   onClose,
+  wide,
 }: {
-  children: ReactNode;
-  wide?: boolean;
+  children: React.ReactNode;
   onClose: () => void;
+  wide?: boolean;
 }) {
-  useTvKeys("shell-esc", 55, (e) => {
-    if (e.key === "Escape") {
-      onClose();
-      sfx("back");
-      return true;
-    }
-    return false;
-  });
   return (
-    <div className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-[#05070d]/85 p-10 backdrop-blur-md">
+    <div className="fade-in fixed inset-0 z-[60] overflow-y-auto no-scrollbar bg-[#05070d]/92 backdrop-blur-md">
       <div
         className={cx(
-          "pop-in max-h-full w-full overflow-y-auto no-scrollbar rounded-2xl border border-white/10 bg-[#0b101b] shadow-2xl",
+          "pop-in relative mx-auto my-10 rounded-2xl border border-white/10 bg-[#0b101b] shadow-2xl",
           wide ? "max-w-5xl" : "max-w-3xl"
         )}
       >
+        <CloseBtn onClick={onClose} />
         {children}
       </div>
     </div>
   );
 }
 
-function Head({ title, kicker, onClose }: { title: string; kicker?: string; onClose: () => void }) {
+function ActionBtn({
+  r,
+  c,
+  focus,
+  hover,
+  onClick,
+  primary,
+  children,
+}: {
+  r: number;
+  c: number;
+  focus: [number, number];
+  hover: (r: number, c: number) => void;
+  onClick: () => void;
+  primary?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="flex items-start justify-between border-b border-white/10 px-8 py-5">
-      <div>
-        <div
-          className="text-[0.65rem] font-bold uppercase tracking-[0.28em]"
-          style={{ color: "var(--accent)" }}
-        >
-          {kicker ?? "NovaDeck"}
-        </div>
-        <h2 className="mt-1 font-display text-2xl font-extrabold text-white">{title}</h2>
-      </div>
-      <button
-        onClick={onClose}
-        className="rounded-full bg-white/5 p-2.5 text-slate-400 transition hover:bg-white/15 hover:text-white"
-        aria-label="Close"
-      >
-        <Icon name="x" className="h-4 w-4" />
-      </button>
-    </div>
+    <Cell
+      r={r}
+      c={c}
+      focus={focus}
+      hover={hover}
+      onClick={onClick}
+      soft
+      className={cx(
+        "relative flex items-center gap-2.5 rounded-full px-7 py-3 font-display text-[0.95rem] font-bold",
+        primary ? "text-[#07101c]" : "bg-white/10 text-white ring-1 ring-white/10"
+      )}
+    >
+      {primary && (
+        <span className="absolute inset-0 rounded-full" style={{ background: "var(--accent)" }} />
+      )}
+      <span className="relative flex items-center gap-2.5">{children}</span>
+    </Cell>
   );
 }
 
-/* --------------------------- DETAILS (film/show/episode/wiki) --------------------------- */
+/* ================================ ROOT =============================== */
 
-export function DetailsOverlay() {
+export function OverlayRoot() {
   const ui = useUI();
-  const { s, d } = useStore();
-  const layer = ui.layer;
-  if (
-    !layer ||
-    (layer.type !== "film" &&
-      layer.type !== "show" &&
-      layer.type !== "episode" &&
-      layer.type !== "wiki")
-  )
-    return null;
-
-  let art: string | null = null;
-  let kicker = "";
-  let title = "";
-  let meta: string[] = [];
-  let desc = "";
-  const buttons: { label: string; icon: string; act: () => void; primary?: boolean }[] = [];
-
-  if (layer.type === "film") {
-    const f: PdFilm = layer.film;
-    art = f.img;
-    kicker = "Real Cinema · free public-domain stream";
-    title = f.title;
-    meta = [String(f.year), f.maturity, fmtDur(f.runtimeMin), f.genres.join(" · "), "archive.org"];
-    desc = f.desc;
-    const listed = s.favMedia.includes(f.id);
-    buttons.push(
-      {
-        label: s.mediaProgress[f.id] ? "Resume" : "Play",
-        icon: "play",
-        primary: true,
-        act: () => ui.playFilm(f),
-      },
-      {
-        label: listed ? "On Watchlist" : "Watchlist",
-        icon: listed ? "check" : "plus",
-        act: () => {
-          d({ type: "favMedia", id: f.id });
-          ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
-        },
-      },
-      {
-        label: "archive.org page",
-        icon: "external",
-        act: () => fireProtocol(archivePage(f)),
-      }
-    );
-  } else if (layer.type === "show") {
-    const x: TvShow = layer.show;
-    art = x.img;
-    kicker = `Series · ${x.network} · ${x.status}`;
-    title = x.name;
-    meta = [
-      x.rating ? `★ ${x.rating.toFixed(1)}` : "Unrated",
-      String(x.year || "—"),
-      `${x.runtime}m episodes`,
-      x.schedule || "—",
-      x.genres.join(" · "),
-    ];
-    desc = x.summary;
-    const listed = s.favMedia.includes(x.id);
-    buttons.push({
-      label: listed ? "On Watchlist" : "Watchlist",
-      icon: listed ? "check" : "plus",
-      primary: true,
-      act: () => {
-        d({ type: "favMedia", id: x.id });
-        ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
-      },
-    });
-    if (x.site)
-      buttons.push({
-        label: `Watch on ${x.network}`,
-        icon: "play",
-        act: () => fireProtocol(x.site!),
-      });
-    buttons.push({
-      label: "TVMaze page",
-      icon: "external",
-      act: () => fireProtocol(`https://www.tvmaze.com/shows/${x.tvmazeId}`),
-    });
-  } else if (layer.type === "episode") {
-    const e: TonightItem = layer.ep;
-    art = e.img;
-    kicker = `Airing tonight · ${e.time} on ${e.network}`;
-    title = e.show;
-    meta = [e.tag, `“${e.episode}”`, e.network, e.genres.join(" · ") || "TV"];
-    desc = e.summary || `${e.show} — ${e.tag} “${e.episode}” airs tonight at ${e.time} on ${e.network}.`;
-    buttons.push({
-      label: "Show on TVMaze",
-      icon: "tv",
-      primary: true,
-      act: () => fireProtocol(`https://www.tvmaze.com/shows/${e.tvmazeShow}`),
-    });
-    if (e.site)
-      buttons.push({
-        label: "Official site",
-        icon: "external",
-        act: () => fireProtocol(e.site!),
-      });
-  } else {
-    const w: WikiFilm = layer.wiki;
-    art = w.imageLg || w.image;
-    kicker = "Film · live data from Wikipedia";
-    title = w.title;
-    meta = [w.year ? String(w.year) : "Film", w.desc || "Feature film"];
-    desc = w.extract || w.desc;
-    const listed = s.favMedia.includes(w.id);
-    buttons.push({
-      label: "Read on Wikipedia",
-      icon: "external",
-      primary: true,
-      act: () => fireProtocol(w.url),
-    });
-    buttons.push({
-      label: listed ? "On Watchlist" : "Watchlist",
-      icon: listed ? "check" : "plus",
-      act: () => {
-        d({ type: "favMedia", id: w.id });
-        ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
-      },
-    });
+  const l = ui.layer;
+  if (!l) return null;
+  switch (l.type) {
+    case "search":
+      return <SearchOverlay seed={l.seed} />;
+    case "settings":
+      return <SettingsOverlay />;
+    case "help":
+      return <HelpOverlay />;
+    case "film":
+      return <FilmOverlay film={l.film} />;
+    case "show":
+      return <ShowOverlay show={l.show} />;
+    case "episode":
+      return <EpisodeOverlay ep={l.ep} />;
+    case "wiki":
+      return <WikiOverlay wiki={l.wiki} />;
+    case "appOptions":
+      return <AppOptionsOverlay app={l.app} />;
+    case "addApp":
+      return <AddAppOverlay app={l.app} />;
+    case "launch":
+      return <LaunchBridge app={l.app} />;
+    default:
+      return null;
   }
-
-  const nav = useTvNav({
-    id: "details",
-    prio: 70,
-    rows: 1,
-    cols: () => buttons.length,
-    onEnter: (_r, c) => buttons[c]?.act(),
-  });
-
-  return (
-    <Shell wide onClose={ui.close}>
-      <div className="relative">
-        <div className="grain relative h-72 overflow-hidden rounded-t-2xl" style={{ background: "#101724" }}>
-          {art && (
-            <img src={art} alt="" className="h-full w-full object-cover" draggable={false} />
-          )}
-          <div className="absolute inset-0 bg-gradient-to-t from-[#0b101b] via-[#0b101b]/40 to-transparent" />
-          <button
-            onClick={ui.close}
-            className="absolute right-5 top-5 rounded-full bg-black/45 p-2.5 text-slate-200 backdrop-blur transition hover:bg-black/70"
-            aria-label="Back"
-          >
-            <Icon name="back" className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="-mt-20 px-8 pb-8">
-          <div
-            className="text-[0.68rem] font-bold uppercase tracking-[0.26em]"
-            style={{ color: "var(--accent)" }}
-          >
-            {kicker}
-          </div>
-          <h2 className="mt-1 font-display text-4xl font-extrabold text-white">{title}</h2>
-          <div className="mt-2 flex flex-wrap items-center gap-2.5 text-sm text-slate-300">
-            {meta.map((m, i) => (
-              <span
-                key={i}
-                className={cx(
-                  "rounded-md px-2 py-0.5",
-                  i === 0 ? "font-bold text-amber-300" : "bg-white/8"
-                )}
-              >
-                {m}
-              </span>
-            ))}
-          </div>
-          <p className="mt-3 max-w-3xl text-[0.95rem] leading-relaxed text-slate-300">{desc}</p>
-          <div className="mt-6 flex flex-wrap items-center gap-4">
-            {buttons.map((b, i) => (
-              <Cell
-                key={b.label}
-                r={0}
-                c={i}
-                focus={[nav.r, nav.c]}
-                hover={nav.set}
-                onClick={b.act}
-                soft
-                className={cx(
-                  "relative flex items-center gap-2.5 rounded-full px-7 py-3 font-display text-base font-semibold",
-                  b.primary
-                    ? "text-[#07101c]"
-                    : "bg-white/10 text-slate-200"
-                )}
-              >
-                {b.primary && (
-                  <span className="absolute inset-0 rounded-full" style={{ background: "var(--accent)" }} />
-                )}
-                <span className="relative flex items-center gap-2.5">
-                  <Icon name={b.icon} filled={b.icon === "play"} className="h-5 w-5" />
-                  {b.label}
-                </span>
-              </Cell>
-            ))}
-          </div>
-        </div>
-      </div>
-    </Shell>
-  );
 }
 
-/* ------------------------------- SEARCH ------------------------------ */
+/* =============================== SEARCH ============================== */
 
-type Result =
-  | { kind: "app"; app: AppDef }
-  | { kind: "show"; show: TvShow }
-  | { kind: "wiki"; wiki: WikiFilm };
-
-export function SearchOverlay() {
+function SearchOverlay({ seed }: { seed?: string }) {
   const ui = useUI();
   const { s } = useStore();
-  const seed = ui.layer?.type === "search" ? (ui.layer.seed ?? "") : "";
-  const [q, setQ] = useState(seed);
+  const region = REGIONS.find((r) => r.id === s.settings.region) ?? REGIONS[0];
+  const [q, setQ] = useState(seed ?? "");
   const [shows, setShows] = useState<TvShow[]>([]);
   const [wikis, setWikis] = useState<WikiFilm[]>([]);
+  const [tracks, setTracks] = useState<MusicTrack[]>([]);
   const [busy, setBusy] = useState(false);
-  const [opening, setOpening] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const seq = useRef(0);
 
   useEffect(() => {
-    if (!q.trim()) {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) {
       setShows([]);
       setWikis([]);
-      setBusy(false);
+      setTracks([]);
       return;
     }
-    const id = ++seq.current;
     setBusy(true);
     const t = setTimeout(() => {
-      const run = async () => {
-        const [a, b] = await Promise.allSettled([
-          searchShows(q.trim()),
-          searchWiki(q.trim()),
-        ]);
-        if (seq.current !== id) return;
-        if (a.status === "fulfilled") setShows(a.value);
-        if (b.status === "fulfilled") setWikis(b.value);
-        setBusy(false);
-      };
-      void run();
-    }, 400);
+      void Promise.allSettled([
+        searchShows(term).then(setShows),
+        searchWiki(term).then(setWikis),
+        searchMusic(term, region.cc).then(setTracks),
+      ]).then(() => setBusy(false));
+    }, 320);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [q, region.cc]);
 
-  const apps = useMemo(
-    () =>
-      q.trim()
-        ? s.apps.filter(
-            (a) =>
-              a.name.toLowerCase().includes(q.trim().toLowerCase()) ||
-              a.cat.toLowerCase().includes(q.trim().toLowerCase())
-          )
-        : s.apps.slice(0, 6),
-    [q, s.apps]
-  );
+  const appHits = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term) return s.apps.slice(0, 8);
+    return s.apps.filter((a) => a.name.toLowerCase().includes(term)).slice(0, 8);
+  }, [q, s.apps]);
 
-  const results: Result[] = [
-    ...apps.slice(0, 6).map((app) => ({ kind: "app", app }) as Result),
-    ...shows.slice(0, 6).map((show) => ({ kind: "show", show }) as Result),
-    ...wikis.slice(0, 4).map((wiki) => ({ kind: "wiki", wiki }) as Result),
+  const rows = [
+    appHits.length ? appHits.length : 0,
+    shows.length,
+    tracks.length,
+    wikis.length,
   ];
+  const visible = rows.filter((n) => n > 0);
+  const nav = useTvNav({
+    id: "search-grid",
+    prio: 80,
+    rows: Math.max(1, visible.length),
+    cols: (r) => visible[r] ?? 1,
+    onEnter: (r, c) => {
+      const kind = rows.map((n, i) => ({ n, i })).filter((x) => x.n > 0)[r]?.i;
+      if (kind === 0 && appHits[c]) ui.openApp(appHits[c]);
+      else if (kind === 1 && shows[c]) ui.openShow(shows[c]);
+      else if (kind === 2 && tracks[c])
+        ui.setLayer({ type: "music", index: c, tracks });
+      else if (kind === 3 && wikis[c]) ui.openWiki(wikis[c]);
+    },
+  });
+  useFocusScroll(nav.r, nav.c);
 
-  const activate = (res: Result) => {
-    if (res.kind === "app") ui.openApp(res.app);
-    else if (res.kind === "show") ui.openShow(res.show);
-    else {
-      const full = decodeURIComponent(res.wiki.url.split("/wiki/").pop() || res.wiki.title);
-      setOpening(res.wiki.title);
-      void wikiSummary(full).then((w) => {
-        setOpening(null);
-        if (w) ui.openWiki(w);
-        else ui.toast("Couldn't load that page", "info");
-      });
-    }
-  };
-
-  useTvKeys("search-input", 72, (e) => {
-    const typing = document.activeElement === inputRef.current;
-    if (typing) {
-      if (e.key === "Escape") {
+  const typing = () => document.activeElement === inputRef.current;
+  useTvKeys("search-input", 81, (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.key === "Escape") {
+      if (typing()) {
         inputRef.current?.blur();
         return true;
       }
-      if (e.key === "Enter") {
-        inputRef.current?.blur();
-        return true;
-      }
-      return false; // let the input handle its own typing
+      ui.close();
+      return true;
     }
-    if (e.key === "Escape") return false; // shell closes
+    if (typing()) return true;
+    if (/^[a-zA-Z0-9 ]$/.test(e.key) || e.key === "Backspace") {
+      inputRef.current?.focus();
+      return false; // let the input handle it
+    }
     return false;
   });
 
-  const nav = useTvNav({
-    id: "search-grid",
-    prio: 71,
-    rows: 2,
-    cols: (r) => (r === 0 ? 1 : Math.max(1, results.length)),
-    onEnter: (r, c) => {
-      if (r === 0) inputRef.current?.focus();
-      else if (results[c]) activate(results[c]);
-    },
-    onEdge: (r, _c, dir) => {
-      if (r === 0 && dir === "down" && results.length) nav.move(1, 0);
-    },
-    extra: (e) => {
-      const typing = document.activeElement === inputRef.current;
-      if (typing) return false;
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        setQ((v) => v + e.key);
-        sfx("move");
-        return true;
-      }
-      if (e.key === "Backspace") {
-        setQ((v) => v.slice(0, -1));
-        return true;
-      }
-      return false;
-    },
-  });
+  let visRow = -1;
+  const bump = (n: number) => (n > 0 ? ++visRow : -1);
+  const rApps = bump(appHits.length);
+  const rShows = bump(shows.length);
+  const rTracks = bump(tracks.length);
+  const rWikis = bump(wikis.length);
 
   return (
-    <Shell wide onClose={ui.close}>
-      <div className="px-8 py-6">
-        <div className="flex items-center gap-3">
-          <Logo className="h-6 w-6" />
-          <span className="font-display text-lg font-bold text-white">Search everything</span>
-          <span className="ml-auto text-xs text-slate-500">
-            Real results · TVMaze + Wikipedia + your apps
-          </span>
-        </div>
-        <Cell
-          r={0}
-          c={0}
-          focus={[nav.r, nav.c]}
-          hover={nav.set}
-          onClick={() => inputRef.current?.focus()}
-          soft
-          className="mt-4 flex w-full items-center gap-3 rounded-xl bg-white/6 px-5 py-4 ring-1 ring-white/10"
-        >
-          <Icon name="search" className="h-5 w-5 text-slate-400" />
+    <OverlayShell onClose={ui.close} wide>
+      <div className="p-10">
+        <div className="flex items-center gap-4">
+          <Icon name="search" className="h-6 w-6 text-slate-400" />
           <input
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Type a show, film or app…"
-            className="w-full bg-transparent text-lg text-white placeholder-slate-500 outline-none"
+            placeholder="Search apps, real shows, films, music…"
+            className="flex-1 bg-transparent font-display text-2xl font-bold text-white placeholder-slate-600 outline-none"
           />
-          {busy && (
-            <span className="spin-slow h-4 w-4 rounded-full border-2 border-white/20 border-t-white" />
-          )}
-        </Cell>
+          {busy && <span className="spin-slow h-5 w-5 rounded-full border-2 border-white/20 border-t-white" />}
+        </div>
+        <div className="mt-2 text-xs text-slate-500">
+          Live sources: TVMaze · Wikipedia · iTunes ({region.label}) · your apps. Esc once leaves the box, Esc again closes.
+        </div>
 
-        {results.length === 0 && !busy && q.trim() && (
-          <div className="mt-8 rounded-xl border border-dashed border-white/15 px-6 py-8 text-center text-sm text-slate-400">
-            No matches for “{q}” — check the spelling, or press Esc to go back.
-          </div>
-        )}
-        {results.length === 0 && !busy && !q.trim() && (
+        {q.trim().length < 2 && (
           <div className="mt-8 text-sm text-slate-500">
-            Start typing to search real shows, films and your installed apps.
+            Type at least 2 characters — results are fetched live.
           </div>
         )}
 
-        {results.length > 0 && (
-          <div className="no-scrollbar mt-6 flex gap-4 overflow-x-auto pb-2">
-            {results.map((res, i) => (
-              <Cell
-                key={
-                  res.kind === "app"
-                    ? "a-" + res.app.id
-                    : res.kind === "show"
-                      ? "s-" + res.show.id
-                      : "w-" + res.wiki.id
-                }
-                r={1}
-                c={i}
-                focus={[nav.r, nav.c]}
-                hover={nav.set}
-                onClick={() => activate(res)}
-                className="shrink-0"
-              >
-                {res.kind === "app" ? (
-                  <div className="flex w-44 flex-col items-center gap-2">
-                    <div
-                      className="flex h-24 w-full items-center justify-center rounded-xl ring-1 ring-white/10"
-                      style={{
-                        background: `linear-gradient(140deg, ${res.app.color}, ${shade(res.app.color, 0.45)})`,
-                      }}
-                    >
-                      <Icon name={res.app.icon} className="h-9 w-9 text-white" />
-                    </div>
-                    <div className="w-full truncate text-center text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-                      App · {res.app.name}
-                    </div>
-                  </div>
-                ) : res.kind === "show" ? (
-                  <div>
-                    <ShowCard s={res.show} />
-                    <div className="mt-1 text-center text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                      Show · TVMaze
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <WikiCard w={res.wiki} />
-                    <div className="mt-1 text-center text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                      {opening === res.wiki.title ? "Loading…" : "Film · Wikipedia"}
-                    </div>
-                  </div>
-                )}
+        {rApps >= 0 && appHits.length > 0 && (
+          <Section title="Your Apps">
+            {appHits.map((a, i) => (
+              <Cell key={a.id} r={rApps} c={i} focus={[nav.r, nav.c]} hover={nav.set} onClick={() => ui.openApp(a)} className="w-28">
+                <div className="flex flex-col items-center gap-2">
+                  <span
+                    className="flex h-16 w-16 items-center justify-center rounded-xl ring-1 ring-white/10"
+                    style={{ background: a.color }}
+                  >
+                    <Icon name={a.icon} className="h-7 w-7 text-white" />
+                  </span>
+                  <span className="w-full truncate text-center text-xs text-slate-300">{a.name}</span>
+                </div>
               </Cell>
             ))}
-          </div>
+          </Section>
+        )}
+        {rShows >= 0 && shows.length > 0 && (
+          <Section title="Shows · TVMaze">
+            {shows.map((sh, i) => (
+              <Cell key={sh.id} r={rShows} c={i} focus={[nav.r, nav.c]} hover={nav.set} onClick={() => ui.openShow(sh)}>
+                <ShowCard s={sh} />
+              </Cell>
+            ))}
+          </Section>
+        )}
+        {rTracks >= 0 && tracks.length > 0 && (
+          <Section title="Music · real previews">
+            {tracks.map((t, i) => (
+              <Cell key={t.id} r={rTracks} c={i} focus={[nav.r, nav.c]} hover={nav.set} onClick={() => ui.setLayer({ type: "music", index: i, tracks })}>
+                <TrackCard t={t} />
+              </Cell>
+            ))}
+          </Section>
+        )}
+        {rWikis >= 0 && wikis.length > 0 && (
+          <Section title="Films · Wikipedia">
+            {wikis.map((w, i) => (
+              <Cell key={w.id} r={rWikis} c={i} focus={[nav.r, nav.c]} hover={nav.set} onClick={() => ui.openWiki(w)}>
+                <WikiCard w={w} />
+              </Cell>
+            ))}
+          </Section>
+        )}
+        {q.trim().length >= 2 && !busy && visible.length === 0 && (
+          <div className="mt-8 text-sm text-slate-500">No live results for “{q}”.</div>
         )}
       </div>
-    </Shell>
+    </OverlayShell>
   );
 }
 
-/* ------------------------------ SETTINGS ----------------------------- */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="mt-7">
+      <div className="mb-3 font-display text-sm font-bold uppercase tracking-[0.18em] text-slate-400">
+        {title}
+      </div>
+      <div className="no-scrollbar flex gap-5 overflow-x-auto pb-2">{children}</div>
+    </div>
+  );
+}
 
-export function SettingsOverlay() {
+/* ============================== SETTINGS ============================= */
+
+function SettingsOverlay() {
   const ui = useUI();
   const { s, d } = useStore();
-  const [armedReset, setArmedReset] = useState(false);
+  const [folders, setFolders] = useState<FolderState[]>([]);
+  const [stName, setStName] = useState("");
+  const [stUrl, setStUrl] = useState("");
 
   useEffect(() => {
-    if (!armedReset) return;
-    const t = setTimeout(() => setArmedReset(false), 3000);
-    return () => clearTimeout(t);
-  }, [armedReset]);
+    let on = true;
+    listFolders().then((f) => on && setFolders(f));
+    return () => {
+      on = false;
+    };
+  }, []);
 
-  const toggleRows = [
-    {
-      label: `Clock: ${s.settings.clock24 ? "24-hour" : "12-hour"}`,
-      icon: "clock",
-      act: () => d({ type: "settings", patch: { clock24: !s.settings.clock24 } }),
-    },
-    {
-      label: `Sounds: ${s.settings.sound ? "On" : "Off"}`,
-      icon: "music",
-      act: () => {
-        d({ type: "settings", patch: { sound: !s.settings.sound } });
-        ui.toast(s.settings.sound ? "Navigation sounds off" : "Navigation sounds on", "music");
-      },
-    },
-    { label: "Help & keys", icon: "keyboard", act: () => ui.setLayer({ type: "help" }) },
-    {
-      label: armedReset ? "Enter again to wipe" : "Factory reset",
-      icon: "restart",
-      act: () => {
-        if (!armedReset) {
-          setArmedReset(true);
-          sfx("error");
-          return;
-        }
-        d({ type: "reset" });
-        ui.toast("NovaDeck reset — fresh start", "restart");
-        ui.close();
-      },
-    },
-  ];
-
+  /* rows: region(4) wall(3) accent(4) clock(2) sound(2) addstream(2) streams(n) folders(n+1) reset(2) */
+  const streamRows = s.netStreams.length;
+  const folderRows = folders.length + 1;
+  const rows = [4, 3, 4, 2, 2, 2, streamRows, folderRows, 2];
   const nav = useTvNav({
     id: "settings",
-    prio: 70,
-    rows: 3,
-    cols: (r) => (r === 0 ? WALLS.length : r === 1 ? ACCENTS.length : toggleRows.length),
+    prio: 80,
+    rows: rows.length,
+    cols: (r) => Math.max(1, rows[r]),
     onEnter: (r, c) => {
       if (r === 0) {
-        d({ type: "settings", patch: { wall: c } });
-        ui.toast(`Wallpaper: ${WALL_NAMES[c]}`, "spark");
+        d({ type: "settings", patch: { region: REGIONS[c].id } });
+        ui.toast(`Region: ${REGIONS[c].label} — catalogue refreshing`, "globe");
       } else if (r === 1) {
-        document.documentElement.style.setProperty("--accent", ACCENTS[c].hex);
+        d({ type: "settings", patch: { wall: c } });
+      } else if (r === 2) {
         d({ type: "settings", patch: { accent: c } });
-        ui.toast(`Accent: ${ACCENTS[c].name}`, "spark");
-      } else toggleRows[c]?.act();
+      } else if (r === 3) {
+        d({ type: "settings", patch: { clock24: c === 0 } });
+      } else if (r === 4) {
+        d({ type: "settings", patch: { sound: c === 0 } });
+      } else if (r === 5) {
+        if (c === 0) {
+          if (!stName.trim() || !/^https?:\/\//i.test(stUrl.trim())) {
+            ui.toast("Enter a name and an http(s):// stream URL", "info");
+            return;
+          }
+          d({
+            type: "addStream",
+            stream: { id: "st-" + Date.now(), name: stName.trim(), url: stUrl.trim() },
+          });
+          setStName("");
+          setStUrl("");
+          ui.toast("Network stream added to For You", "check");
+        }
+      } else if (r === 6) {
+        const st = s.netStreams[c];
+        if (st) {
+          d({ type: "removeStream", id: st.id });
+          ui.toast(`Removed ${st.name}`, "trash");
+        }
+      } else if (r === 7) {
+        if (c === folders.length) {
+          void pickFolder().then((f) => {
+            if (f) {
+              setFolders((old) => [...old.filter((x) => x.id !== f.id), f]);
+              ui.toast(`Folder "${f.name}" added — ${f.files.length} media files`, "folder");
+            }
+          });
+        } else {
+          const fo = folders[c];
+          void removeFolder(fo.id).then(() => {
+            setFolders((old) => old.filter((x) => x.id !== fo.id));
+            ui.toast(`Removed folder ${fo.name}`, "trash");
+          });
+        }
+      } else if (r === 8) {
+        if (c === 0) {
+          d({ type: "reset" });
+          ui.toast("Factory reset — defaults restored", "restart");
+        } else ui.close();
+      }
     },
   });
+  useFocusScroll(nav.r, nav.c);
   const focus: [number, number] = [nav.r, nav.c];
+  const hover = nav.set;
+
+  const toggle = (on: boolean, i: number) => (
+    <Cell
+      r={i === 3 ? 3 : 4}
+      c={on ? 0 : 1}
+      focus={focus}
+      hover={hover}
+      onClick={() => {}}
+      soft
+      className={cx(
+        "rounded-full px-6 py-2.5 font-display text-sm font-bold",
+        (i === 3 ? s.settings.clock24 : s.settings.sound) === on
+          ? "text-[#07101c]"
+          : "bg-white/8 text-slate-300 ring-1 ring-white/10"
+      )}
+    >
+      <span className="relative flex items-center gap-2">
+        {(i === 3 ? s.settings.clock24 : s.settings.sound) === on && (
+          <span className="absolute -inset-x-6 -inset-y-2.5 -z-0 rounded-full" style={{ background: "var(--accent)" }} />
+        )}
+        <span className="relative">{on ? (i === 3 ? "24-hour" : "On") : i === 3 ? "12-hour" : "Off"}</span>
+      </span>
+    </Cell>
+  );
 
   return (
-    <Shell onClose={ui.close}>
-      <Head title="Settings" kicker="NovaDeck" onClose={ui.close} />
-      <div className="space-y-7 px-8 py-6">
-        <div>
-          <div className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
-            Wallpaper
-          </div>
-          <div className="flex gap-4">
-            {WALLS.map((w, i) => (
-              <Cell
-                key={w}
-                r={0}
-                c={i}
-                focus={focus}
-                hover={nav.set}
-                onClick={() => {
-                  d({ type: "settings", patch: { wall: i } });
-                  ui.toast(`Wallpaper: ${WALL_NAMES[i]}`, "spark");
-                }}
-                className={cx(
-                  "relative h-20 w-40 overflow-hidden rounded-xl ring-1",
-                  s.settings.wall === i ? "ring-white/60" : "ring-white/10"
+    <OverlayShell onClose={ui.close} wide>
+      <div className="p-10">
+        <h2 className="font-display text-2xl font-extrabold text-white">Settings</h2>
+        <p className="mt-1 text-sm text-slate-500">All choices save instantly on this PC.</p>
+
+        <Row label="Content region" hint="Drives tonight's schedule, music and Indian originals">
+          {REGIONS.map((rg, i) => (
+            <Cell key={rg.id} r={0} c={i} focus={focus} hover={hover} soft
+              className={cx(
+                "rounded-full px-5 py-2.5 font-display text-sm font-bold",
+                s.settings.region === rg.id ? "text-[#07101c]" : "bg-white/8 text-slate-300 ring-1 ring-white/10"
+              )}
+            >
+              <span className="relative">
+                {s.settings.region === rg.id && (
+                  <span className="absolute -inset-x-5 -inset-y-2.5 rounded-full" style={{ background: "var(--accent)" }} />
                 )}
+                <span className="relative">{rg.label}</span>
+              </span>
+            </Cell>
+          ))}
+        </Row>
+
+        <Row label="Wallpaper">
+          {WALLS.map((w, i) => (
+            <Cell key={w} r={1} c={i} focus={focus} hover={hover} soft className="relative">
+              <span
+                className={cx(
+                  "block h-16 w-28 rounded-lg bg-cover bg-center ring-1",
+                  s.settings.wall === i ? "ring-white" : "ring-white/15"
+                )}
+                style={{ backgroundImage: `url(${w})` }}
+              />
+              <span className="mt-1 block text-center text-xs text-slate-400">{WALL_NAMES[i]}</span>
+            </Cell>
+          ))}
+        </Row>
+
+        <Row label="Accent colour">
+          {ACCENTS.map((a, i) => (
+            <Cell key={a.hex} r={2} c={i} focus={focus} hover={hover} soft className="flex flex-col items-center gap-1">
+              <span
+                className={cx("h-10 w-10 rounded-full", s.settings.accent === i && "ring-2 ring-white ring-offset-2 ring-offset-[#0b101b]")}
+                style={{ background: a.hex }}
+              />
+              <span className="text-xs text-slate-400">{a.name}</span>
+            </Cell>
+          ))}
+        </Row>
+
+        <Row label="Clock">{toggle(true, 3)}{toggle(false, 3)}</Row>
+        <Row label="Navigation sounds">{toggle(true, 4)}{toggle(false, 4)}</Row>
+
+        <Row label="Network stream (NAS / shared)" hint="Enter a name, then an http(s) URL — plays here and hands off to VLC">
+          <input
+            value={stName}
+            onChange={(e) => setStName(e.target.value)}
+            placeholder="Name, e.g. NAS Movies"
+            className="w-52 rounded-lg bg-white/8 px-4 py-2.5 text-sm text-white ring-1 ring-white/10 outline-none placeholder:text-slate-600"
+          />
+          <input
+            value={stUrl}
+            onChange={(e) => setStUrl(e.target.value)}
+            placeholder="http://192.168.1.10/movies/night.mp4"
+            className="w-80 rounded-lg bg-white/8 px-4 py-2.5 text-sm text-white ring-1 ring-white/10 outline-none placeholder:text-slate-600"
+          />
+          <Cell r={5} c={0} focus={focus} hover={hover} onClick={() => {}} soft
+            className="relative rounded-full px-6 py-2.5 font-display text-sm font-bold text-[#07101c]"
+          >
+            <span className="absolute inset-0 rounded-full" style={{ background: "var(--accent)" }} />
+            <span className="relative flex items-center gap-2">
+              <Icon name="plus" className="h-4 w-4" /> Add
+            </span>
+          </Cell>
+        </Row>
+
+        {s.netStreams.length > 0 && (
+          <Row label="Saved streams" hint="Enter removes">
+            {s.netStreams.map((st, i) => (
+              <Cell key={st.id} r={6} c={i} focus={focus} hover={hover} soft
+                className="flex items-center gap-3 rounded-xl bg-white/6 px-4 py-3 ring-1 ring-white/10"
               >
-                <img src={w} alt={WALL_NAMES[i]} className="h-full w-full object-cover" draggable={false} />
-                <span className="absolute bottom-1 left-2 text-[0.68rem] font-bold text-white drop-shadow">
-                  {WALL_NAMES[i]}
+                <Icon name="globe" className="h-5 w-5 text-emerald-300" />
+                <span>
+                  <span className="block max-w-48 truncate text-sm font-bold text-white">{st.name}</span>
+                  <span className="block max-w-48 truncate text-xs text-slate-500">{st.url}</span>
                 </span>
-                {s.settings.wall === i && (
-                  <span className="absolute right-1.5 top-1.5 rounded-full bg-black/50 p-1 text-white">
-                    <Icon name="check" className="h-3 w-3" />
-                  </span>
-                )}
+                <Icon name="trash" className="h-4 w-4 text-slate-500" />
               </Cell>
             ))}
-          </div>
-        </div>
-        <div>
-          <div className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
-            Accent color
-          </div>
-          <div className="flex gap-4">
-            {ACCENTS.map((a, i) => (
-              <Cell
-                key={a.name}
-                r={1}
-                c={i}
-                focus={focus}
-                hover={nav.set}
-                onClick={() => {
-                  document.documentElement.style.setProperty("--accent", a.hex);
-                  d({ type: "settings", patch: { accent: i } });
-                  ui.toast(`Accent: ${a.name}`, "spark");
-                }}
-                className="flex items-center gap-2.5 rounded-xl bg-white/5 px-4 py-3 ring-1 ring-white/10"
-              >
-                <span className="h-5 w-5 rounded-full" style={{ background: a.hex }} />
-                <span className="text-sm font-semibold text-slate-200">{a.name}</span>
-                {s.settings.accent === i && <Icon name="check" className="h-4 w-4 text-white" />}
-              </Cell>
-            ))}
-          </div>
-        </div>
-        <div>
-          <div className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
-            System
-          </div>
-          <div className="flex flex-wrap gap-4">
-            {toggleRows.map((t, i) => (
-              <Cell
-                key={t.label}
-                r={2}
-                c={i}
-                focus={focus}
-                hover={nav.set}
-                onClick={t.act}
-                soft
-                className={cx(
-                  "flex items-center gap-2.5 rounded-xl px-5 py-3 ring-1 ring-white/10",
-                  armedReset && i === 3 ? "bg-red-600/25" : "bg-white/5"
-                )}
-              >
-                <Icon name={t.icon} className="h-4.5 w-4.5 text-slate-300" />
-                <span className="text-sm font-semibold text-slate-200">{t.label}</span>
-              </Cell>
-            ))}
-          </div>
-        </div>
-        <p className="text-xs leading-relaxed text-slate-500">
-          NovaDeck 2.0 · Live content: TVMaze (shows & tonight) · archive.org (public-domain
-          cinema) · Wikipedia (film data). Your apps, progress and settings never leave this PC.
-        </p>
+          </Row>
+        )}
+
+        <Row label="Local folders" hint="Videos & music folders on this PC — scanned and playable here">
+          {folders.map((fo, i) => (
+            <Cell key={fo.id} r={7} c={i} focus={focus} hover={hover} soft
+              className="flex items-center gap-3 rounded-xl bg-white/6 px-4 py-3 ring-1 ring-white/10"
+            >
+              <Icon name="folder" className="h-5 w-5 text-sky-300" />
+              <span>
+                <span className="block text-sm font-bold text-white">{fo.name}</span>
+                <span className="block text-xs text-slate-500">
+                  {fo.files.length} files · {fo.perm === "granted" ? "connected" : fo.perm === "prompt" ? "needs re-grant on Home" : "session only"}
+                </span>
+              </span>
+              <Icon name="trash" className="h-4 w-4 text-slate-500" />
+            </Cell>
+          ))}
+          <Cell r={7} c={folders.length} focus={focus} hover={hover} soft
+            className="flex items-center gap-3 rounded-xl border-2 border-dashed border-white/25 px-4 py-3"
+          >
+            <Icon name="plus" className="h-5 w-5 text-slate-300" />
+            <span className="text-sm font-bold text-slate-200">Add folder</span>
+          </Cell>
+        </Row>
+
+        <Row label="Danger zone">
+          <Cell r={8} c={0} focus={focus} hover={hover} soft
+            className="rounded-full bg-red-500/15 px-6 py-2.5 font-display text-sm font-bold text-red-300 ring-1 ring-red-400/30"
+          >
+            Factory reset
+          </Cell>
+          <Cell r={8} c={1} focus={focus} hover={hover} onClick={ui.close} soft
+            className="rounded-full bg-white/10 px-6 py-2.5 font-display text-sm font-bold text-white"
+          >
+            Close (Esc)
+          </Cell>
+        </Row>
       </div>
-    </Shell>
+    </OverlayShell>
   );
 }
 
-/* -------------------------------- HELP ------------------------------- */
+function Row({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mt-7">
+      <div className="font-display text-sm font-bold uppercase tracking-[0.18em] text-slate-400">{label}</div>
+      {hint && <div className="mt-0.5 text-xs text-slate-600">{hint}</div>}
+      <div className="mt-3 flex flex-wrap items-center gap-4">{children}</div>
+    </div>
+  );
+}
 
-export function HelpOverlay() {
+/* ================================ HELP =============================== */
+
+function HelpOverlay() {
   const ui = useUI();
-  const rows: [string, string][] = [
-    ["← ↑ → ↓", "Move focus — the white ring is your remote"],
+  useTvKeys("help", 80, (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.key === "Escape") {
+      ui.close();
+      return true;
+    }
+    return true;
+  });
+  const keys: [string, string][] = [
+    ["← ↑ → ↓", "Move the white focus ring"],
     ["Enter", "Open / play / activate"],
-    ["Esc", "Back — works from any screen, app window or player"],
-    ["Any letter", "Jump straight into Search from anywhere"],
-    ["⇧ M or right-click", "Options for the focused app (favorite / edit / remove)"],
-    ["F11", "Full-screen TV mode (browser)"],
-    ["Alt + Tab", "Return to NovaDeck after launching a Windows program"],
+    ["Esc", "Back from any screen, player or window"],
+    ["Ctrl+Shift+H", "Close the current app view and jump to Home"],
+    ["Any letter", "Jump straight into Search"],
+    ["⇧M or right-click", "Options for the focused app"],
+    ["In player ← / →", "Seek 10 seconds"],
+    ["In player M / R", "Mute / restart"],
+    ["F11", "Full-screen TV mode"],
   ];
   return (
-    <Shell onClose={ui.close}>
-      <Head title="Keys & launching real programs" kicker="Guide" onClose={ui.close} />
-      <div className="space-y-6 px-8 py-6">
-        <div className="grid gap-2.5">
-          {rows.map(([k, v]) => (
-            <div key={k} className="flex items-center gap-4">
-              <span className="w-44 shrink-0 rounded-lg bg-white/8 px-3 py-1.5 text-center font-display text-sm font-bold text-white ring-1 ring-white/10">
+    <OverlayShell onClose={ui.close} wide>
+      <div className="p-10">
+        <h2 className="font-display text-2xl font-extrabold text-white">Help & keys</h2>
+        <div className="mt-5 grid grid-cols-2 gap-x-10 gap-y-2.5">
+          {keys.map(([k, v]) => (
+            <div key={k} className="flex items-center gap-3">
+              <kbd className="rounded-md bg-white/10 px-2.5 py-1 font-mono text-xs font-bold text-white ring-1 ring-white/15">
                 {k}
-              </span>
-              <span className="text-sm text-slate-300">{v}</span>
+              </kbd>
+              <span className="text-sm text-slate-400">{v}</span>
             </div>
           ))}
         </div>
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5">
-          <div className="font-display text-sm font-bold text-white">
-            Launch any .exe on this PC from a tile
-          </div>
-          <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-[0.82rem] leading-relaxed text-slate-300">
-            <li>
-              In Notepad, create <code className="rounded bg-black/40 px-1">novadeck-movies.reg</code> with:
-              <pre className="mt-2 overflow-x-auto rounded-lg bg-black/50 p-3 text-[0.72rem] leading-relaxed text-emerald-300">{`Windows Registry Editor Version 5.00
+
+        <h3 className="mt-8 font-display text-base font-bold text-white">
+          Launch any Windows program from a tile
+        </h3>
+        <p className="mt-2 text-sm leading-relaxed text-slate-400">
+          Browsers can't start an arbitrary .exe directly, but Windows protocols can. Register one
+          per program, once — then Enter on the tile launches the real app and NovaDeck stays open
+          (Alt+Tab back, or Ctrl+Shift+H).
+        </p>
+        <pre className="mt-3 overflow-x-auto rounded-xl bg-black/50 p-4 font-mono text-xs leading-relaxed text-emerald-200 ring-1 ring-white/10">
+{`Windows Registry Editor Version 5.00
 
 [HKEY_CLASSES_ROOT\\novadeck-movies]
 @="URL:NovaDeck Movies"
 "URL Protocol"=""
 
 [HKEY_CLASSES_ROOT\\novadeck-movies\\shell\\open\\command]
-@="\\"C:\\\\Path\\\\To\\\\YourApp.exe\\""`}</pre>
-            </li>
-            <li>Double-click the .reg file to register the protocol (one time only).</li>
-            <li>
-              In NovaDeck: <b>Apps → Add app</b>, set the target to{" "}
-              <code className="rounded bg-black/40 px-1">novadeck-movies://</code> — kind shows as{" "}
-              <b>PC</b>. Enter on that tile now launches the real program; Windows may ask to
-              confirm once.
-            </li>
-            <li>
-              NovaDeck never closes while your program runs — <b>Alt + Tab</b> back, or press{" "}
-              <b>Esc</b> inside NovaDeck quick windows.
-            </li>
-          </ol>
-          <p className="mt-3 text-[0.75rem] text-slate-500">
-            Built-in <b>PC</b> tiles already use real Windows protocols: Steam (steam://), VS Code
-            (vscode://), Calculator, Paint, Photos, Settings, Xbox, Terminal, Microsoft Store and
-            more.
-          </p>
+@="\\"C:\\\\Path\\\\To\\\\YourApp.exe\\""
+
+Then add an app in NovaDeck with target:  novadeck-movies://`}
+        </pre>
+        <p className="mt-3 text-sm text-slate-500">
+          Many programs already register protocols: <code className="text-emerald-300">steam://</code>,{" "}
+          <code className="text-emerald-300">vscode://</code>, <code className="text-emerald-300">discord://</code>, and
+          Windows built-ins like <code className="text-emerald-300">calculator:</code>,{" "}
+          <code className="text-emerald-300">ms-paint:</code>, <code className="text-emerald-300">ms-settings:</code>.
+        </p>
+
+        <h3 className="mt-8 font-display text-base font-bold text-white">Watching in VLC</h3>
+        <p className="mt-2 text-sm leading-relaxed text-slate-400">
+          Network streams you add (NAS, Jellyfin, an <code className="text-emerald-300">http://</code> share) play
+          right here and also offer <span className="font-bold text-white">Open in VLC</span> — VLC ships with the{" "}
+          <code className="text-emerald-300">vlc://</code> protocol, so it receives the same stream URL. Local
+          folders play inside NovaDeck, since browsers can't hand file paths to other apps.
+        </p>
+
+        <div className="mt-8 flex justify-end">
+          <button
+            onClick={ui.close}
+            className="rounded-full bg-white/10 px-6 py-2.5 font-display text-sm font-bold text-white transition hover:bg-white/20"
+          >
+            Close (Esc)
+          </button>
         </div>
       </div>
-    </Shell>
+    </OverlayShell>
   );
 }
 
-/* ---------------------------- APP OPTIONS ---------------------------- */
+/* ============================== DETAILS ============================== */
 
-export function AppOptionsOverlay() {
+function DetailShell({
+  art,
+  onClose,
+  children,
+}: {
+  art: string | null;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="fade-in fixed inset-0 z-[60] overflow-y-auto no-scrollbar bg-[#05070d]/95">
+      <CloseBtn onClick={onClose} />
+      <div className="relative mx-auto max-w-5xl">
+        <div className="relative h-[24rem] overflow-hidden rounded-b-3xl">
+          {art ? (
+            <img src={art} alt="" className="h-full w-full object-cover" />
+          ) : (
+            <div className="h-full w-full bg-gradient-to-br from-[#16233c] to-[#0a0f1a]" />
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-[#0b101b] via-[#0b101b]/35 to-transparent" />
+        </div>
+        <div className="pop-in -mt-24 px-12 pb-16">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function FilmOverlay({ film }: { film: PdFilm }) {
   const ui = useUI();
   const { s, d } = useStore();
-  const layer = ui.layer;
-  const app = layer?.type === "appOptions" ? layer.app : null;
-  const [armed, setArmed] = useState(false);
-
-  useEffect(() => {
-    if (!armed) return;
-    const t = setTimeout(() => setArmed(false), 3000);
-    return () => clearTimeout(t);
-  }, [armed]);
-
-  const options = useMemo(() => {
-    if (!app) return [];
-    const fav = s.favApps.includes(app.id);
-    return [
-      { label: "Launch", icon: "play", act: () => ui.openApp(app) },
-      {
-        label: fav ? "Remove from favorites" : "Add to favorites",
-        icon: "star",
-        act: () => {
-          d({ type: "favApp", id: app.id });
-          ui.toast(fav ? "Removed from favorites" : "Pinned to favorites", "star");
-        },
-      },
-      { label: "Edit", icon: "pencil", act: () => ui.openAddApp(app) },
-      {
-        label: armed ? "Press Enter again to remove" : "Remove",
-        icon: "trash",
-        danger: true,
-        act: () => {
-          if (!armed) {
-            setArmed(true);
-            sfx("error");
-            return;
-          }
-          d({ type: "removeApp", id: app.id });
-          ui.toast(`${app.name} removed`, "trash");
-          ui.close();
-        },
-      },
-      { label: "Close", icon: "x", act: () => ui.close() },
-    ];
-  }, [app, s.favApps, armed, ui, d]);
-
+  const prog = s.mediaProgress[film.id] ?? 0;
+  const listed = s.favMedia.includes(film.id);
   const nav = useTvNav({
-    id: "app-opts",
-    prio: 70,
+    id: "film-detail",
+    prio: 80,
     rows: 1,
-    cols: () => options.length,
-    onEnter: (_r, c) => options[c]?.act(),
+    cols: () => 3,
+    onEnter: (_r, c) => {
+      if (c === 0) ui.playFilm(film);
+      else if (c === 1) {
+        d({ type: "favMedia", id: film.id });
+        ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
+      } else window.open(archivePage(film), "_blank", "noopener");
+    },
   });
-
-  if (!app) return null;
+  const focus: [number, number] = [nav.r, nav.c];
   return (
-    <Shell onClose={ui.close}>
-      <Head title={app.name} kicker={`${app.cat} · ${KIND_LABEL[app.kind]}`} onClose={ui.close} />
-      <div className="px-8 py-6">
+    <DetailShell art={film.img} onClose={ui.close}>
+      <div className="text-[0.7rem] font-bold uppercase tracking-[0.3em]" style={{ color: "var(--accent)" }}>
+        Real Cinema · free public-domain stream
+      </div>
+      <h2 className="mt-2 font-display text-5xl font-extrabold text-white">{film.title}</h2>
+      <div className="mt-3 flex items-center gap-3 text-sm font-medium text-slate-300">
+        <span>{film.year}</span>
+        <span className="rounded border border-white/30 px-1.5 py-px text-xs">{film.maturity}</span>
+        <span>{fmtDur(film.runtimeMin)}</span>
+        <span className="rounded bg-white/10 px-1.5 py-px text-xs">{film.genres.join(" · ")}</span>
+        {prog > 60 && (
+          <span className="rounded bg-white/10 px-1.5 py-px text-xs">Resume at {fmtClockShort(prog)}</span>
+        )}
+      </div>
+      <p className="mt-4 max-w-2xl leading-relaxed text-slate-300">{film.desc}</p>
+      <div className="mt-7 flex items-center gap-4">
+        <ActionBtn r={0} c={0} focus={focus} hover={nav.set} primary onClick={() => ui.playFilm(film)}>
+          <Icon name="play" filled className="h-5 w-5" /> {prog > 60 ? "Resume" : "Play"}
+        </ActionBtn>
+        <ActionBtn
+          r={0}
+          c={1}
+          focus={focus}
+          hover={nav.set}
+          onClick={() => {
+            d({ type: "favMedia", id: film.id });
+            ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
+          }}
+        >
+          <Icon name={listed ? "check" : "plus"} className="h-5 w-5" /> {listed ? "On Watchlist" : "Watchlist"}
+        </ActionBtn>
+        <ActionBtn r={0} c={2} focus={focus} hover={nav.set} onClick={() => window.open(archivePage(film), "_blank", "noopener")}>
+          <Icon name="external" className="h-5 w-5" /> archive.org
+        </ActionBtn>
+      </div>
+      <p className="mt-5 text-xs text-slate-600">
+        Streams real video from archive.org · Esc returns · progress saves automatically
+      </p>
+    </DetailShell>
+  );
+}
+
+function fmtClockShort(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+
+function ShowOverlay({ show }: { show: TvShow }) {
+  const ui = useUI();
+  const { s, d } = useStore();
+  const listed = s.favMedia.includes(show.id);
+  const cols = 2 + (show.site ? 1 : 0) + 1;
+  const nav = useTvNav({
+    id: "show-detail",
+    prio: 80,
+    rows: 1,
+    cols: () => cols,
+    onEnter: (_r, c) => {
+      if (c === 0) {
+        d({ type: "favMedia", id: show.id });
+        ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
+      } else if (c === 1) window.open(`https://www.tvmaze.com/shows/${show.tvmazeId}`, "_blank", "noopener");
+      else if (c === 2 && show.site) window.open(show.site, "_blank", "noopener");
+      else window.open(`https://www.tvmaze.com/shows/${show.tvmazeId}`, "_blank", "noopener");
+    },
+  });
+  const focus: [number, number] = [nav.r, nav.c];
+  return (
+    <DetailShell art={show.img} onClose={ui.close}>
+      <div className="text-[0.7rem] font-bold uppercase tracking-[0.3em]" style={{ color: "var(--accent)" }}>
+        Series · {show.network}
+      </div>
+      <h2 className="mt-2 font-display text-5xl font-extrabold text-white">{show.name}</h2>
+      <div className="mt-3 flex items-center gap-3 text-sm font-medium text-slate-300">
+        <span className="flex items-center gap-1 font-bold text-amber-300">
+          <Icon name="star" filled className="h-4 w-4" /> {show.rating ? show.rating.toFixed(1) : "—"}
+        </span>
+        <span>{show.year || "—"}</span>
+        <span className="rounded border border-white/30 px-1.5 py-px text-xs">{show.status}</span>
+        <span>{show.runtime}m episodes</span>
+        {show.schedule && <span className="rounded bg-white/10 px-1.5 py-px text-xs">{show.schedule}</span>}
+      </div>
+      <p className="mt-4 max-w-2xl leading-relaxed text-slate-300">{show.summary || "No synopsis yet."}</p>
+      <div className="mt-7 flex items-center gap-4">
+        <ActionBtn
+          r={0}
+          c={0}
+          focus={focus}
+          hover={nav.set}
+          primary
+          onClick={() => {
+            d({ type: "favMedia", id: show.id });
+            ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
+          }}
+        >
+          <Icon name={listed ? "check" : "plus"} className="h-5 w-5" /> {listed ? "On Watchlist" : "Watchlist"}
+        </ActionBtn>
+        <ActionBtn r={0} c={1} focus={focus} hover={nav.set} onClick={() => window.open(`https://www.tvmaze.com/shows/${show.tvmazeId}`, "_blank", "noopener")}>
+          <Icon name="external" className="h-5 w-5" /> TVMaze
+        </ActionBtn>
+        {show.site && (
+          <ActionBtn r={0} c={2} focus={focus} hover={nav.set} onClick={() => window.open(show.site!, "_blank", "noopener")}>
+            <Icon name="globe" className="h-5 w-5" /> Official site
+          </ActionBtn>
+        )}
+      </div>
+      <p className="mt-5 text-xs text-slate-600">
+        Where to stream: search “{show.name}” on your added apps (Netflix, Prime, Hotstar…) — Enter opens them full-screen.
+      </p>
+    </DetailShell>
+  );
+}
+
+function EpisodeOverlay({ ep }: { ep: TonightItem }) {
+  const ui = useUI();
+  const { s, d } = useStore();
+  const listed = s.favMedia.includes(ep.id);
+  const nav = useTvNav({
+    id: "ep-detail",
+    prio: 80,
+    rows: 1,
+    cols: () => 3,
+    onEnter: (_r, c) => {
+      if (c === 0) {
+        d({ type: "favMedia", id: ep.id });
+        ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
+      } else if (c === 1) window.open(`https://www.tvmaze.com/shows/${ep.tvmazeShow}`, "_blank", "noopener");
+      else if (ep.site) window.open(ep.site, "_blank", "noopener");
+      else window.open(`https://www.tvmaze.com/shows/${ep.tvmazeShow}`, "_blank", "noopener");
+    },
+  });
+  const focus: [number, number] = [nav.r, nav.c];
+  return (
+    <DetailShell art={ep.img} onClose={ui.close}>
+      <div className="flex items-center gap-3">
+        <span className="flex items-center gap-1.5 rounded-md bg-red-600/90 px-2 py-1 text-[0.65rem] font-bold tracking-[0.18em] text-white">
+          <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-white" /> AIRS TONIGHT
+        </span>
+        <span className="font-display text-sm font-bold text-slate-300">
+          {ep.time} · {ep.network}
+        </span>
+      </div>
+      <h2 className="mt-3 font-display text-5xl font-extrabold text-white">{ep.show}</h2>
+      <div className="mt-2 font-display text-lg font-semibold text-slate-300">
+        {ep.tag} · “{ep.episode}”
+      </div>
+      <div className="mt-2 text-sm text-slate-500">{ep.genres.join(" · ")}</div>
+      {ep.summary && <p className="mt-4 max-w-2xl leading-relaxed text-slate-300">{ep.summary}</p>}
+      <div className="mt-7 flex items-center gap-4">
+        <ActionBtn
+          r={0}
+          c={0}
+          focus={focus}
+          hover={nav.set}
+          primary
+          onClick={() => {
+            d({ type: "favMedia", id: ep.id });
+            ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
+          }}
+        >
+          <Icon name={listed ? "check" : "plus"} className="h-5 w-5" /> {listed ? "On Watchlist" : "Watchlist"}
+        </ActionBtn>
+        <ActionBtn r={0} c={1} focus={focus} hover={nav.set} onClick={() => window.open(`https://www.tvmaze.com/shows/${ep.tvmazeShow}`, "_blank", "noopener")}>
+          <Icon name="tv" className="h-5 w-5" /> Show page
+        </ActionBtn>
+        {ep.site && (
+          <ActionBtn r={0} c={2} focus={focus} hover={nav.set} onClick={() => window.open(ep.site!, "_blank", "noopener")}>
+            <Icon name="globe" className="h-5 w-5" /> Official site
+          </ActionBtn>
+        )}
+      </div>
+    </DetailShell>
+  );
+}
+
+function WikiOverlay({ wiki }: { wiki: WikiFilm }) {
+  const ui = useUI();
+  const [full, setFull] = useState<WikiFilm>(wiki);
+  useEffect(() => {
+    let on = true;
+    void wikiSummary(wiki.title).then((w) => {
+      if (on && w) setFull(w);
+    });
+    return () => {
+      on = false;
+    };
+  }, [wiki]);
+  const nav = useTvNav({
+    id: "wiki-detail",
+    prio: 80,
+    rows: 1,
+    cols: () => 1,
+    onEnter: () => window.open(full.url, "_blank", "noopener"),
+  });
+  const focus: [number, number] = [nav.r, nav.c];
+  return (
+    <DetailShell art={full.imageLg ?? full.image} onClose={ui.close}>
+      <div className="text-[0.7rem] font-bold uppercase tracking-[0.3em]" style={{ color: "var(--accent)" }}>
+        Acclaimed film · Wikipedia
+      </div>
+      <h2 className="mt-2 font-display text-5xl font-extrabold text-white">{full.title}</h2>
+      {full.year && <div className="mt-2 text-sm font-semibold text-slate-400">{full.year} · {full.desc}</div>}
+      <p className="mt-4 max-w-2xl leading-relaxed text-slate-300">
+        {full.extract || full.desc || "Loading summary…"}
+      </p>
+      <div className="mt-7 flex items-center gap-4">
+        <ActionBtn r={0} c={0} focus={focus} hover={nav.set} primary onClick={() => window.open(full.url, "_blank", "noopener")}>
+          <Icon name="external" className="h-5 w-5" /> Open Wikipedia
+        </ActionBtn>
+      </div>
+    </DetailShell>
+  );
+}
+
+/* ============================= APP OPTIONS =========================== */
+
+function AppOptionsOverlay({ app }: { app: AppDef }) {
+  const ui = useUI();
+  const { s, d } = useStore();
+  const fav = s.favApps.includes(app.id);
+  const nav = useTvNav({
+    id: "app-options",
+    prio: 80,
+    rows: 1,
+    cols: () => 4,
+    onEnter: (_r, c) => {
+      if (c === 0) {
+        ui.close();
+        setTimeout(() => ui.openApp(app), 60);
+      } else if (c === 1) {
+        d({ type: "favApp", id: app.id });
+        ui.toast(fav ? `Unpinned ${app.name}` : `Pinned ${app.name} to favorites`, "star");
+      } else if (c === 2) {
+        ui.setLayer({ type: "addApp", app });
+      } else {
+        d({ type: "removeApp", id: app.id });
+        ui.toast(`Removed ${app.name} — its shelf is gone too`, "trash");
+        ui.close();
+      }
+    },
+  });
+  const focus: [number, number] = [nav.r, nav.c];
+  return (
+    <OverlayShell onClose={ui.close}>
+      <div className="p-10">
         <div className="flex items-center gap-5">
-          <div
-            className="flex h-20 w-20 shrink-0 items-center justify-center rounded-xl ring-1 ring-white/10"
-            style={{ background: `linear-gradient(140deg, ${app.color}, ${shade(app.color, 0.45)})` }}
+          <span
+            className="flex h-16 w-16 items-center justify-center rounded-2xl ring-1 ring-white/10"
+            style={{ background: app.color }}
           >
-            <Icon name={app.icon} className="h-10 w-10 text-white" />
-          </div>
-          <div className="min-w-0">
-            <div className="truncate font-display text-lg font-bold text-white">{app.name}</div>
-            <div className="mt-0.5 truncate text-sm text-slate-400">{app.blurb}</div>
-            <div className="mt-1 truncate font-mono text-xs text-slate-500">
-              {app.target || "(runs inside NovaDeck)"}
+            <Icon name={app.icon} className="h-8 w-8 text-white" />
+          </span>
+          <div>
+            <div className="font-display text-2xl font-extrabold text-white">{app.name}</div>
+            <div className="mt-0.5 text-sm text-slate-500">
+              {app.cat} · {KIND_LABEL[app.kind]}
             </div>
           </div>
         </div>
-        <div className="mt-6 flex flex-wrap gap-3.5">
-          {options.map((o, i) => (
-            <Cell
-              key={o.label}
-              r={0}
-              c={i}
-              focus={[nav.r, nav.c]}
-              hover={nav.set}
-              onClick={o.act}
-              soft
-              className={cx(
-                "flex items-center gap-2.5 rounded-full px-6 py-3 font-display text-[0.95rem] font-semibold ring-1 ring-white/10",
-                "danger" in o && o.danger
-                  ? armed
-                    ? "bg-red-600/40 text-white"
-                    : "bg-red-600/15 text-red-300"
-                  : "bg-white/6 text-slate-200"
-              )}
-            >
-              <Icon name={o.icon} className="h-4.5 w-4.5" />
-              {o.label}
-            </Cell>
-          ))}
+        <div className="mt-8 flex flex-wrap items-center gap-4">
+          <ActionBtn r={0} c={0} focus={focus} hover={nav.set} primary onClick={() => {}}>
+            <Icon name="play" filled className="h-5 w-5" /> Open
+          </ActionBtn>
+          <ActionBtn r={0} c={1} focus={focus} hover={nav.set} onClick={() => {}}>
+            <Icon name="star" filled={fav} className={fav ? "h-5 w-5 text-amber-300" : "h-5 w-5"} />
+            {fav ? "Unpin" : "Pin"}
+          </ActionBtn>
+          <ActionBtn r={0} c={2} focus={focus} hover={nav.set} onClick={() => {}}>
+            <Icon name="pencil" className="h-5 w-5" /> Edit
+          </ActionBtn>
+          <ActionBtn r={0} c={3} focus={focus} hover={nav.set} onClick={() => {}}>
+            <Icon name="trash" className="h-5 w-5" /> Remove
+          </ActionBtn>
         </div>
+        {app.target && (
+          <div className="mt-6 rounded-xl bg-black/40 px-4 py-3 font-mono text-xs text-emerald-200 ring-1 ring-white/10">
+            {app.target}
+          </div>
+        )}
       </div>
-    </Shell>
+    </OverlayShell>
   );
 }
 
-/* ------------------------------ ADD / EDIT APP ------------------------------ */
+/* =============================== ADD APP ============================= */
 
-export function AddAppOverlay() {
+function AddAppOverlay({ app }: { app?: AppDef }) {
   const ui = useUI();
   const { d } = useStore();
-  const editing = ui.layer?.type === "addApp" ? ui.layer.app : undefined;
-
-  const [name, setName] = useState(editing?.name ?? "");
-  const [target, setTarget] = useState(editing?.target ?? "");
-  const [cat, setCat] = useState(editing?.cat ?? "Entertainment");
-  const [icon, setIcon] = useState(editing?.icon ?? "globe");
-  const [color, setColor] = useState(editing?.color ?? "#2563eb");
-  const [kind, setKind] = useState<AppKind | "auto">(editing?.kind ?? "auto");
+  const [name, setName] = useState(app?.name ?? "");
+  const [target, setTarget] = useState(app?.target ?? "");
+  const [cat, setCat] = useState(app?.cat ?? "Entertainment");
+  const [icon, setIcon] = useState(app?.icon ?? "globe");
+  const [color, setColor] = useState(app?.color ?? TILE_COLORS[0]);
   const nameRef = useRef<HTMLInputElement>(null);
   const targetRef = useRef<HTMLInputElement>(null);
+  const editing = !!app;
 
-  const detected = detectKind(target);
-  const effKind: AppKind = kind === "auto" ? detected : kind;
-  const kindOptions: { v: AppKind | "auto"; label: string }[] = [
-    { v: "auto", label: `Auto · ${detected}` },
-    { v: "url", label: "Web tab" },
-    { v: "protocol", label: "PC program" },
-    { v: "sim", label: "In-launcher" },
-  ];
+  const kind = detectKind(target);
+  const rows = [1, 1, CATEGORIES.length - 1, ICON_CHOICES.length, TILE_COLORS.length, 2];
+  const nav = useTvNav({
+    id: "add-app",
+    prio: 80,
+    rows: rows.length,
+    cols: (r) => Math.max(1, rows[r]),
+    onEnter: (r, c) => {
+      if (r === 0) nameRef.current?.focus();
+      else if (r === 1) targetRef.current?.focus();
+      else if (r === 2) setCat(CATEGORIES[c + 1]);
+      else if (r === 3) setIcon(ICON_CHOICES[c]);
+      else if (r === 4) setColor(TILE_COLORS[c]);
+      else if (r === 5) {
+        if (c === 0) save();
+        else ui.close();
+      }
+    },
+  });
+  useFocusScroll(nav.r, nav.c);
+  const focus: [number, number] = [nav.r, nav.c];
+
+  useEffect(() => {
+    nameRef.current?.focus();
+  }, []);
+
+  const typing = () =>
+    document.activeElement === nameRef.current || document.activeElement === targetRef.current;
+
+  useTvKeys("add-app-input", 81, (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.key === "Escape") {
+      if (typing()) {
+        (document.activeElement as HTMLElement | null)?.blur();
+        return true;
+      }
+      ui.close();
+      return true;
+    }
+    if (e.key === "Enter" && typing()) {
+      (document.activeElement as HTMLElement | null)?.blur();
+      return true;
+    }
+    return typing();
+  });
 
   const save = () => {
-    const nm = name.trim();
-    if (!nm) {
+    if (!name.trim()) {
       ui.toast("Give the app a name first", "info");
-      sfx("error");
+      nameRef.current?.focus();
       return;
     }
-    const app: AppDef = {
-      id: editing?.id ?? "app-" + Date.now().toString(36),
-      name: nm,
+    const def: AppDef = {
+      id: app?.id ?? "app-" + Date.now(),
+      name: name.trim(),
       cat,
       icon,
       color,
       target: target.trim(),
-      kind: effKind,
-      builtIn: editing?.builtIn,
-      blurb: editing?.blurb ?? KIND_LABEL[effKind],
+      kind,
+      builtIn: app?.builtIn,
+      blurb: app?.blurb ?? (kind === "protocol" ? "Launches a Windows program" : kind === "url" ? "Opens in a new tab" : "Runs inside NovaDeck"),
     };
-    if (editing) {
-      d({ type: "updateApp", app });
-      ui.toast(`${nm} updated`, "check");
-    } else {
-      d({ type: "addApp", app });
-      ui.toast(`${nm} added to your apps`, "check");
-    }
+    d({ type: editing ? "updateApp" : "addApp", app: def });
+    ui.toast(editing ? `${def.name} updated` : `${def.name} added to Your Apps`, "check");
     ui.close();
   };
 
-  const rows = 7;
-  const nav = useTvNav({
-    id: "add-app",
-    prio: 70,
-    rows,
-    cols: (r) =>
-      r === 0 || r === 1 ? 1 : r === 2 ? 1 : r === 3 ? ICON_CHOICES.length : r === 4 ? TILE_COLORS.length : r === 5 ? kindOptions.length : 2,
-    onEnter: (r, c) => {
-      if (r === 0) nameRef.current?.focus();
-      else if (r === 1) targetRef.current?.focus();
-      else if (r === 2) {
-        const i = CATEGORIES.indexOf(cat);
-        setCat(CATEGORIES[(i + 1) % CATEGORIES.length]);
-        sfx("tab");
-      } else if (r === 3) setIcon(ICON_CHOICES[c]);
-      else if (r === 4) setColor(TILE_COLORS[c]);
-      else if (r === 5) {
-        setKind(kindOptions[c].v);
-        sfx("tab");
-      } else if (c === 0) save();
-      else ui.close();
-    },
-    extra: (e) => {
-      const typing =
-        document.activeElement === nameRef.current ||
-        document.activeElement === targetRef.current;
-      if (!typing) return false;
-      if (e.key === "Escape" || e.key === "Enter") {
-        (document.activeElement as HTMLInputElement).blur();
-        return true;
-      }
-      return false;
-    },
-  });
-  const focus: [number, number] = [nav.r, nav.c];
-
-  const field = (r: number, ref: React.RefObject<HTMLInputElement>, label: string, value: string, set: (v: string) => void, placeholder: string, mono = false) => (
-    <div>
-      <div className="mb-1.5 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">{label}</div>
-      <Cell
-        r={r}
-        c={0}
-        focus={focus}
-        hover={nav.set}
-        onClick={() => ref.current?.focus()}
-        soft
-        className="flex w-full items-center rounded-xl bg-white/6 px-4 py-3 ring-1 ring-white/10"
-      >
-        <input
-          ref={ref}
-          value={value}
-          onChange={(e) => set(e.target.value)}
-          placeholder={placeholder}
-          className={cx(
-            "w-full bg-transparent text-white placeholder-slate-500 outline-none",
-            mono && "font-mono text-sm"
-          )}
-        />
-      </Cell>
-    </div>
-  );
-
   return (
-    <Shell wide onClose={ui.close}>
-      <Head
-        title={editing ? `Edit ${editing.name}` : "Add an app"}
-        kicker="Launch anything from your launcher"
-        onClose={ui.close}
-      />
-      <div className="grid gap-8 px-8 py-6 lg:grid-cols-[1fr_16rem]">
-        <div className="space-y-5">
-          {field(0, nameRef, "Name", name, setName, "e.g. My Movie Player")}
-          {field(
-            1,
-            targetRef,
-            "Launch target",
-            target,
-            setTarget,
-            "https://… · steam:// · vscode:// · myapp:// · empty = in-launcher",
-            true
-          )}
-          <div>
-            <div className="mb-1.5 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
-              Category — {cat} (Enter to cycle)
-            </div>
-            <Cell
-              r={2}
-              c={0}
-              focus={focus}
-              hover={nav.set}
-              onClick={() => {
-                const i = CATEGORIES.indexOf(cat);
-                setCat(CATEGORIES[(i + 1) % CATEGORIES.length]);
-              }}
-              soft
-              className="flex items-center gap-2 rounded-xl bg-white/6 px-4 py-3 ring-1 ring-white/10"
+    <OverlayShell onClose={ui.close} wide>
+      <div className="p-10">
+        <h2 className="font-display text-2xl font-extrabold text-white">
+          {editing ? `Edit ${app.name}` : "Add an app"}
+        </h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Launch anything: a website, a Windows program via protocol, or an in-launcher tool.
+        </p>
+
+        <div className="mt-7 grid grid-cols-[16rem_1fr] gap-10">
+          {/* live preview */}
+          <div className="flex flex-col items-center gap-3 pt-2">
+            <span
+              className="relative flex h-28 w-28 items-center justify-center rounded-2xl ring-1 ring-white/10 transition-all"
+              style={{ background: color }}
             >
-              <Icon name="folder" className="h-4 w-4 text-slate-300" />
-              <span className="font-semibold text-white">{cat}</span>
-            </Cell>
+              <Icon name={icon} className="h-12 w-12 text-white drop-shadow" />
+            </span>
+            <div className="font-display text-base font-bold text-white">{name || "App name"}</div>
+            <span
+              className={cx(
+                "rounded-full px-3 py-1 text-[0.68rem] font-bold uppercase tracking-[0.16em]",
+                kind === "url" && "bg-sky-400/15 text-sky-300",
+                kind === "protocol" && "bg-emerald-400/15 text-emerald-300",
+                kind === "sim" && "bg-amber-400/15 text-amber-300"
+              )}
+            >
+              {kind === "url" ? "Web app" : kind === "protocol" ? "Windows program" : "In-launcher"}
+            </span>
+            <div className="text-center text-xs text-slate-600">{KIND_LABEL[kind]}</div>
           </div>
+
           <div>
-            <div className="mb-1.5 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Icon</div>
-            <div className="no-scrollbar flex gap-2 overflow-x-auto">
-              {ICON_CHOICES.map((ic, i) => (
-                <Cell
-                  key={ic}
-                  r={3}
-                  c={i}
-                  focus={focus}
-                  hover={nav.set}
-                  onClick={() => setIcon(ic)}
+            <Field label="Name">
+              <Cell r={0} c={0} focus={focus} hover={nav.set} soft className="flex-1">
+                <input
+                  ref={nameRef}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. VLC, Plex, My Game"
+                  className="w-full rounded-lg bg-white/8 px-4 py-3 text-sm text-white ring-1 ring-white/10 outline-none placeholder:text-slate-600 focus:ring-white/40"
+                />
+              </Cell>
+            </Field>
+            <Field label="Launch target" hint="https://… · steam:// · vscode:// · myapp:// (registry, see Help) · empty = in-launcher">
+              <Cell r={1} c={0} focus={focus} hover={nav.set} soft className="flex-1">
+                <input
+                  ref={targetRef}
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  placeholder="https:// or protocol://"
+                  className="w-full rounded-lg bg-white/8 px-4 py-3 font-mono text-sm text-white ring-1 ring-white/10 outline-none placeholder:text-slate-600 focus:ring-white/40"
+                />
+              </Cell>
+            </Field>
+            <Field label="Category">
+              {CATEGORIES.slice(1).map((cc, i) => (
+                <Cell key={cc} r={2} c={i} focus={focus} hover={nav.set} soft
                   className={cx(
-                    "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ring-1",
-                    icon === ic ? "bg-white/15 ring-white/50" : "bg-white/5 ring-white/10"
+                    "rounded-full px-4 py-2 text-sm font-semibold",
+                    cat === cc ? "text-[#07101c]" : "bg-white/8 text-slate-300 ring-1 ring-white/10"
+                  )}
+                >
+                  <span className="relative">
+                    {cat === cc && (
+                      <span className="absolute -inset-x-4 -inset-y-2 rounded-full" style={{ background: "var(--accent)" }} />
+                    )}
+                    <span className="relative">{cc}</span>
+                  </span>
+                </Cell>
+              ))}
+            </Field>
+            <Field label="Icon">
+              {ICON_CHOICES.map((ic, i) => (
+                <Cell key={ic} r={3} c={i} focus={focus} hover={nav.set} soft
+                  className={cx(
+                    "flex h-11 w-11 items-center justify-center rounded-xl ring-1",
+                    icon === ic ? "ring-2 ring-white bg-white/15" : "ring-white/10 bg-white/5"
                   )}
                 >
                   <Icon name={ic} className="h-5 w-5 text-slate-200" />
                 </Cell>
               ))}
-            </div>
-          </div>
-          <div>
-            <div className="mb-1.5 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Tile color</div>
-            <div className="flex flex-wrap gap-2">
-              {TILE_COLORS.map((tc, i) => (
-                <Cell
-                  key={tc}
-                  r={4}
-                  c={i}
-                  focus={focus}
-                  hover={nav.set}
-                  onClick={() => setColor(tc)}
-                  className={cx(
-                    "h-9 w-9 rounded-lg ring-1",
-                    color === tc ? "ring-2 ring-white" : "ring-white/10"
-                  )}
+            </Field>
+            <Field label="Tile colour">
+              {TILE_COLORS.map((cl, i) => (
+                <Cell key={cl} r={4} c={i} focus={focus} hover={nav.set} soft
+                  className={cx("h-10 w-10 rounded-full", color === cl && "ring-2 ring-white ring-offset-2 ring-offset-[#0b101b]")}
                 >
-                  <span className="block h-full w-full rounded-lg" style={{ background: tc }} />
+                  <span className="block h-full w-full rounded-full" style={{ background: cl }} />
                 </Cell>
               ))}
+            </Field>
+            <div className="mt-7 flex items-center gap-4">
+              <ActionBtn r={5} c={0} focus={focus} hover={nav.set} primary onClick={save}>
+                <Icon name="check" className="h-5 w-5" /> {editing ? "Save changes" : "Add to launcher"}
+              </ActionBtn>
+              <ActionBtn r={5} c={1} focus={focus} hover={nav.set} onClick={ui.close}>
+                Cancel (Esc)
+              </ActionBtn>
             </div>
-          </div>
-          <div>
-            <div className="mb-1.5 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
-              Launch kind — {KIND_LABEL[effKind]}
-            </div>
-            <div className="flex flex-wrap gap-2.5">
-              {kindOptions.map((k, i) => (
-                <Cell
-                  key={k.v}
-                  r={5}
-                  c={i}
-                  focus={focus}
-                  hover={nav.set}
-                  onClick={() => setKind(k.v)}
-                  soft
-                  className={cx(
-                    "rounded-full px-4 py-2 text-sm font-semibold ring-1",
-                    kind === k.v ? "bg-white/15 text-white ring-white/40" : "bg-white/5 text-slate-300 ring-white/10"
-                  )}
-                >
-                  {k.label}
-                </Cell>
-              ))}
-            </div>
-          </div>
-          <div className="flex gap-3 pt-1">
-            <Cell
-              r={6}
-              c={0}
-              focus={focus}
-              hover={nav.set}
-              onClick={save}
-              soft
-              className="relative flex items-center gap-2 rounded-full px-7 py-2.5 font-display font-bold text-[#07101c]"
-            >
-              <span className="absolute inset-0 rounded-full" style={{ background: "var(--accent)" }} />
-              <span className="relative flex items-center gap-2">
-                <Icon name="check" className="h-4.5 w-4.5" />
-                {editing ? "Save changes" : "Add app"}
-              </span>
-            </Cell>
-            <Cell
-              r={6}
-              c={1}
-              focus={focus}
-              hover={nav.set}
-              onClick={ui.close}
-              soft
-              className="flex items-center gap-2 rounded-full bg-white/8 px-7 py-2.5 font-display font-semibold text-slate-200"
-            >
-              <Icon name="x" className="h-4.5 w-4.5" />
-              Cancel
-            </Cell>
-          </div>
-        </div>
-        <div>
-          <div className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Preview</div>
-          <div className="sticky top-0">
-            <div
-              className="flex h-28 items-center justify-center rounded-xl ring-1 ring-white/10"
-              style={{ background: `linear-gradient(140deg, ${color}, ${shade(color, 0.45)})` }}
-            >
-              <Icon name={icon} className="h-12 w-12 text-white drop-shadow" />
-            </div>
-            <div className="mt-2 text-center text-sm font-semibold text-white">
-              {name.trim() || "New app"}
-            </div>
-            <div className="mt-1 text-center text-xs text-slate-400">{cat} · {effKind.toUpperCase()}</div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[0.72rem] leading-relaxed text-slate-400">
-              <b className="text-slate-200">PC kind:</b> register any .exe once with a custom
-              protocol (see Help, press ?) and enter it as the target — e.g.{" "}
-              <code className="font-mono text-emerald-300">myplayer://</code>
-            </div>
+            <p className="mt-4 text-xs text-slate-600">
+              Esc leaves a text field · Esc again closes · arrows move the rest — the form scrolls with you.
+            </p>
           </div>
         </div>
       </div>
-    </Shell>
+    </OverlayShell>
   );
 }
 
-/* ------------------------------ LAUNCH ------------------------------- */
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="mt-5">
+      <div className="font-display text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{label}</div>
+      {hint && <div className="mt-0.5 text-xs text-slate-600">{hint}</div>}
+      <div className="mt-2 flex flex-wrap items-center gap-3">{children}</div>
+    </div>
+  );
+}
 
-export function LaunchOverlay() {
+/* ============================ LAUNCH BRIDGE ========================== */
+
+function LaunchBridge({ app }: { app: AppDef }) {
   const ui = useUI();
-  const app = ui.layer?.type === "launch" ? ui.layer.app : null;
-
+  const fired = useRef(false);
   useEffect(() => {
-    if (!app) return;
+    if (fired.current) return;
+    fired.current = true;
     if (app.kind === "url") window.open(app.target, "_blank", "noopener");
-    else fireProtocol(app.target);
-    const t = setTimeout(
-      () => ui.toast(`${app.name} launched — Alt+Tab back anytime`, "external"),
-      900
-    );
+    else if (app.kind === "protocol") fireProtocol(app.target);
+    const t = setTimeout(() => ui.close(), 6500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  if (!app) return null;
+  useTvKeys("launch-bridge", 95, (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.key === "Escape") {
+      ui.close();
+      return true;
+    }
+    return true;
+  });
+  const nav = useTvNav({
+    id: "launch-actions",
+    prio: 94,
+    rows: 1,
+    cols: () => 2,
+    onEnter: (_r, c) => {
+      if (c === 0) {
+        if (app.kind === "url") window.open(app.target, "_blank", "noopener");
+        else fireProtocol(app.target);
+      } else ui.close();
+    },
+  });
+  const focus: [number, number] = [nav.r, nav.c];
   return (
-    <div className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-[#05070d]/92 backdrop-blur-md">
-      <div className="pop-in flex flex-col items-center text-center">
-        <div
-          className="flex h-24 w-24 items-center justify-center rounded-2xl shadow-2xl"
-          style={{ background: `linear-gradient(140deg, ${app.color}, ${shade(app.color, 0.45)})` }}
+    <div className="fade-in fixed inset-0 z-[70] flex items-center justify-center bg-[#05070d]/96">
+      <CloseBtn onClick={ui.close} />
+      <div className="pop-in w-full max-w-md px-10 text-center">
+        <span
+          className="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl shadow-2xl"
+          style={{ background: app.color }}
         >
-          <Icon name={app.icon} className="h-12 w-12 text-white" />
-        </div>
-        <div className="mt-5 font-display text-2xl font-extrabold text-white">{app.name}</div>
-        <div className="mt-1 max-w-md text-sm text-slate-400">
+          <Icon name={app.icon} className="h-10 w-10 text-white" />
+        </span>
+        <div className="mt-5 font-display text-2xl font-extrabold text-white">Launching {app.name}…</div>
+        <p className="mt-2 text-sm leading-relaxed text-slate-400">
           {app.kind === "url"
-            ? "Opening in a new browser tab — NovaDeck stays right here."
-            : "Asking Windows to launch this program — NovaDeck stays open behind it."}
-        </div>
-        <div className="mt-6 flex items-center gap-2 text-slate-300">
-          <span className="spin-slow h-5 w-5 rounded-full border-2 border-white/20 border-t-white" />
-          <span className="text-sm font-medium">Launching…</span>
-        </div>
-        <div className="mt-8 rounded-full bg-white/6 px-5 py-2 text-xs font-semibold text-slate-300 ring-1 ring-white/10">
-          Esc — back to NovaDeck · Alt+Tab — switch to the program
+            ? "Opened in a new tab. NovaDeck stays right here — Alt+Tab back, or Ctrl+Shift+H to jump Home."
+            : "Windows is starting the program. NovaDeck never closes — Alt+Tab back, or Ctrl+Shift+H to jump Home."}
+        </p>
+        <div className="mt-7 flex items-center justify-center gap-4">
+          <ActionBtn r={0} c={0} focus={focus} hover={nav.set} onClick={() => {}}>
+            <Icon name="restart" className="h-5 w-5" /> Launch again
+          </ActionBtn>
+          <ActionBtn r={0} c={1} focus={focus} hover={nav.set} onClick={ui.close}>
+            <Icon name="back" className="h-5 w-5" /> Back (Esc)
+          </ActionBtn>
         </div>
       </div>
     </div>

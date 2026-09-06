@@ -7,7 +7,7 @@ import {
   useReducer,
   type ReactNode,
 } from "react";
-import { DEFAULT_APPS, type AppDef } from "../data";
+import { DEFAULT_APPS, type AppDef, type NetStream } from "../data";
 import { setSoundEnabled } from "./sound";
 
 export interface Settings {
@@ -15,6 +15,7 @@ export interface Settings {
   accent: number;
   clock24: boolean;
   sound: boolean;
+  region: string;
 }
 
 export interface Recent {
@@ -28,11 +29,11 @@ export interface AppState {
   mediaProgress: Record<string, number>;
   favMedia: string[];
   favApps: string[];
+  netStreams: NetStream[];
   settings: Settings;
-  profile: number;
 }
 
-const KEY = "novadeck-state-v2";
+const KEY = "novadeck-state-v3";
 
 function defaults(): AppState {
   return {
@@ -40,9 +41,15 @@ function defaults(): AppState {
     recents: [],
     mediaProgress: {},
     favMedia: [],
-    favApps: [],
-    settings: { wall: 0, accent: 0, clock24: true, sound: true },
-    profile: 0,
+    favApps: ["steam", "spotify"],
+    netStreams: [],
+    settings: {
+      wall: 0,
+      accent: 0,
+      clock24: true,
+      sound: true,
+      region: "in",
+    },
   };
 }
 
@@ -57,6 +64,7 @@ function load(): AppState {
       ...p,
       settings: { ...d.settings, ...(p.settings ?? {}) },
       apps: Array.isArray(p.apps) && p.apps.length ? p.apps : d.apps,
+      netStreams: Array.isArray(p.netStreams) ? p.netStreams : [],
     };
   } catch {
     return defaults();
@@ -71,8 +79,9 @@ export type Action =
   | { type: "addApp"; app: AppDef }
   | { type: "updateApp"; app: AppDef }
   | { type: "removeApp"; id: string }
+  | { type: "addStream"; stream: NetStream }
+  | { type: "removeStream"; id: string }
   | { type: "settings"; patch: Partial<Settings> }
-  | { type: "profile"; n: number }
   | { type: "reset" };
 
 function reducer(s: AppState, a: Action): AppState {
@@ -118,10 +127,12 @@ function reducer(s: AppState, a: Action): AppState {
         favApps: s.favApps.filter((x) => x !== a.id),
         recents: s.recents.filter((x) => x.id !== a.id),
       };
+    case "addStream":
+      return { ...s, netStreams: [...s.netStreams, a.stream] };
+    case "removeStream":
+      return { ...s, netStreams: s.netStreams.filter((x) => x.id !== a.id) };
     case "settings":
       return { ...s, settings: { ...s.settings, ...a.patch } };
-    case "profile":
-      return { ...s, profile: a.n };
     case "reset":
       try {
         localStorage.removeItem(KEY);

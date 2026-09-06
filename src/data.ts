@@ -15,11 +15,120 @@ export const TABS: { id: TabId; label: string }[] = [
   { id: "library", label: "Library" },
 ];
 
-export const PROFILES = [
-  { name: "Alex", color: "#63b3ff" },
-  { name: "Sam", color: "#ff7a59" },
-  { name: "Kids", color: "#3ddc97" },
+/* ------------------------------ regions ----------------------------- */
+
+export interface Region {
+  id: string;
+  label: string;
+  countries: string[]; // TVMaze schedule countries, in priority order
+  cc: string; // iTunes country
+  music: string[]; // iTunes search terms
+  wikiExtra: string[]; // extra acclaimed films for this region
+  indian: boolean; // surface Indian originals shelf
+}
+
+export const REGIONS: Region[] = [
+  {
+    id: "in",
+    label: "India",
+    countries: ["IN", "US", "GB"],
+    cc: "IN",
+    music: ["Arijit Singh", "A R Rahman", "Bollywood hits"],
+    wikiExtra: ["Sholay", "Mughal-E-Azam", "3 Idiots", "Lagaan"],
+    indian: true,
+  },
+  {
+    id: "global",
+    label: "Global",
+    countries: ["US", "GB", "IN"],
+    cc: "US",
+    music: ["The Weeknd", "A R Rahman", "Coldplay"],
+    wikiExtra: ["Parasite (2019 film)", "Spirited Away"],
+    indian: false,
+  },
+  {
+    id: "us",
+    label: "United States",
+    countries: ["US", "GB"],
+    cc: "US",
+    music: ["The Weeknd", "Taylor Swift", "Kendrick Lamar"],
+    wikiExtra: [],
+    indian: false,
+  },
+  {
+    id: "gb",
+    label: "United Kingdom",
+    countries: ["GB", "US"],
+    cc: "GB",
+    music: ["Ed Sheeran", "Adele", "Arctic Monkeys"],
+    wikiExtra: [],
+    indian: false,
+  },
 ];
+
+/* Which streaming platform an added app recommends from (TVMaze channel names). */
+export const PLATFORM_MAP: Record<string, string[]> = {
+  netflix: ["Netflix"],
+  prime: ["Amazon Prime Video", "Prime Video", "Amazon"],
+  disney: ["Disney+", "Disney Plus"],
+  hotstar: ["Hotstar", "Disney+ Hotstar"],
+  jiocinema: ["JioCinema", "Jio Cinema"],
+  sonyliv: ["SonyLIV", "Sony LIV"],
+  youtube: ["YouTube"],
+};
+
+export const INDIAN_SHOWS = [
+  "Sacred Games",
+  "Mirzapur",
+  "The Family Man",
+  "Panchayat",
+  "Scam 1992",
+  "Farzi",
+  "Rocket Boys",
+  "Kota Factory",
+  "Delhi Crime",
+  "Gullak",
+];
+
+/* --------------------------- real YouTube --------------------------- */
+
+export interface YtVideo {
+  id: string; // real video id
+  title: string;
+  channel: string;
+}
+
+export const YOUTUBE_VIDEOS: YtVideo[] = [
+  { id: "dQw4w9WgXcQ", title: "Never Gonna Give You Up", channel: "Rick Astley" },
+  { id: "9bZkp7q19f0", title: "GANGNAM STYLE", channel: "officialpsy" },
+  { id: "kJQP7kiw5F0", title: "Despacito", channel: "Luis Fonsi ft. Daddy Yankee" },
+  { id: "JGwWNGJdvx8", title: "Shape of You", channel: "Ed Sheeran" },
+  { id: "OPf0YbXqDm0", title: "Uptown Funk", channel: "Mark Ronson ft. Bruno Mars" },
+  { id: "RgKAFK5djSk", title: "See You Again", channel: "Wiz Khalifa ft. Charlie Puth" },
+  { id: "fJ9rUzIMcZQ", title: "Bohemian Rhapsody", channel: "Queen Official" },
+  { id: "60ItHLz5WEA", title: "Faded", channel: "Alan Walker" },
+];
+
+export const ytThumb = (id: string) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+export const ytWatch = (id: string) => `https://www.youtube.com/watch?v=${id}`;
+
+/* ------------------------------ music ------------------------------- */
+
+/** Real track from the iTunes Search API (artwork + 30s preview stream). */
+export interface MusicTrack {
+  id: string;
+  track: string;
+  artist: string;
+  art: string;
+  preview: string;
+}
+
+/** User-added network stream (NAS / Jellyfin / http share). */
+export interface NetStream {
+  id: string;
+  name: string;
+  url: string;
+}
 
 export const WALLS = [
   "images/wall-ember.jpg",
@@ -244,6 +353,9 @@ export const DEFAULT_APPS: AppDef[] = [
   { id: "netflix", name: "Netflix", cat: "Entertainment", icon: "film", color: "#e50914", target: "https://www.netflix.com", kind: "url", builtIn: true, blurb: "Series and films on Netflix" },
   { id: "prime", name: "Prime Video", cat: "Entertainment", icon: "film", color: "#00a8e1", target: "https://www.primevideo.com", kind: "url", builtIn: true, blurb: "Amazon's streaming library" },
   { id: "disney", name: "Disney+", cat: "Entertainment", icon: "spark", color: "#0e47ba", target: "https://www.disneyplus.com", kind: "url", builtIn: true, blurb: "Disney, Pixar, Marvel, Star Wars" },
+  { id: "hotstar", name: "Disney+ Hotstar", cat: "Entertainment", icon: "play", color: "#1f80e0", target: "https://www.hotstar.com", kind: "url", builtIn: true, blurb: "Indian originals, cricket and more" },
+  { id: "jiocinema", name: "JioCinema", cat: "Entertainment", icon: "film", color: "#e91e63", target: "https://www.jiocinema.com", kind: "url", builtIn: true, blurb: "Free movies, shows and live sport" },
+  { id: "sonyliv", name: "SonyLIV", cat: "Entertainment", icon: "tv", color: "#0d47a1", target: "https://www.sonyliv.com", kind: "url", builtIn: true, blurb: "Sony shows, sport and originals" },
   { id: "twitch", name: "Twitch", cat: "Entertainment", icon: "tv", color: "#9146ff", target: "https://www.twitch.tv", kind: "url", builtIn: true, blurb: "Live gaming and IRL streams" },
   { id: "spotify", name: "Spotify", cat: "Music", icon: "music", color: "#1db954", target: "https://open.spotify.com", kind: "url", builtIn: true, blurb: "Music and podcasts in the browser" },
   { id: "steam", name: "Steam", cat: "Games", icon: "gamepad", color: "#2a475e", target: "steam://open/main", kind: "protocol", builtIn: true, blurb: "Launches the Steam client on this PC" },

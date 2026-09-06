@@ -1,9 +1,8 @@
 # NovaDeck — Google TV-style launcher for Windows 10
 
-A full-screen, remote-control-first launcher. Runs on a Windows 10 PC in Chrome/Edge
-(press **F11** for TV mode), driven entirely by **arrows / Enter / Esc** — with **real**
-apps, **real** movies you can actually watch, **real** show data and a **real** tonight
-schedule. No demo content: anything shown comes from live public APIs or your own activity.
+A full-screen, remote-control-first launcher for Windows 10 PCs (Chrome/Edge, **F11** for TV
+mode), driven entirely by **arrows / Enter / Esc**. Everything on screen is real: recommendations
+come from the apps you've added, films genuinely stream, and your watch history is your own.
 
 ## Run it
 
@@ -14,74 +13,70 @@ npm install
 npm run dev                 # → http://localhost:3000
 ```
 
-Production build:
+Production:
 
 ```powershell
 npm run build
 npx serve dist -l 4173      # → http://localhost:4173
 ```
 
-Open the URL in Chrome or Edge, press **F11**. The app must be served over HTTP —
-don't double-click `dist/index.html` (assets use absolute paths).
+Serve over HTTP — don't double-click `dist/index.html`.
 
-## Where the real data comes from
+## 1 · Recommendations follow your apps
 
-| What you see                | Source (key-less, public API)                     |
-| --------------------------- | ------------------------------------------------- |
-| Shows tab, hero, search     | **TVMaze** — real posters, ratings, schedules      |
-| "Tonight" tab               | **TVMaze `/schedule`** — real episodes airing today (US, then GB) |
-| Real Cinema (playable!)     | **archive.org** — public-domain feature films (Night of the Living Dead, Charade, Plan 9, Nosferatu, Sita Sings the Blues…) streamed as real MP4s; runtime verified via the metadata API |
-| Acclaimed Films             | **Wikipedia REST** — real synopses, stills, links  |
-| Continue Watching / Resume  | Your **actual playback position**, saved locally, resumes to the second |
-| Recently Opened             | Your **actual launch history**                     |
+The For You page only recommends from apps present in **Your Apps**:
 
-Everything is cached in `localStorage` (shows/films ~7 days, tonight's schedule per day).
-If you're offline, NovaDeck says so honestly and your apps still work.
+- **Netflix / Prime / Hotstar / Disney+ / JioCinema / SonyLIV** → "Top on …" shelves with real
+  series (posters, ratings) bucketed per platform from TVMaze. Remove the app → its shelf disappears.
+- **YouTube** → real trending videos; Enter opens the actual video in a tab.
+- **Spotify** → real music picks (iTunes Search) with playable 30-second previews, arrow-navigable.
+- **Free-to-watch**: *Real Cinema* (public-domain features streaming from archive.org — Enter
+  plays the real film), *Acclaimed Films* (Wikipedia), and *On Tonight* (real broadcast schedule).
 
-## Launching real Windows programs
+## 2 · Local & shared media → VLC
 
-Tiles support three kinds, detected from the target you enter (Apps → Add app):
+- **Settings → Add folder** (or the tile on For You): pick any folder on this PC or a mounted NAS
+  share. Videos/music are scanned and playable right in the launcher; progress is saved. Folder
+  access persists via Chrome/Edge's File System Access API (one re-grant click after a restart).
+- **Settings → Network stream**: add `http://` URLs (Jellyfin, Plex direct, `python -m http.server`
+  on a share, IP cameras…). They play in the launcher **and** offer **Open in VLC** — VLC's
+  built-in `vlc://` protocol receives the same URL, so VLC starts playing it on your PC.
 
-- **WEB** — `https://…` opens in a new tab; the launcher stays exactly where it was.
-- **PC** — a URI protocol asks Windows to start a program. Preinstalled tiles already
-  use real ones: `steam://`, `vscode://`, `discord://`, and Windows built-ins
-  (`calculator:`, `ms-paint:`, `ms-photos:`, `ms-settings:`, `ms-clock:`, `msxbox:`,
-  `ms-gamebar:`, `ms-windows-terminal://`, `ms-windows-store://`, `bingmaps:`, `mailto:`…).
-- **In-launcher** — runs inside NovaDeck (e.g. the autosaving Notepad); **Esc** returns
-  to the launcher instantly.
+## 3 · Launching apps
 
-To launch **any .exe**, register a custom protocol once (press `?` in the app for the
-exact `.reg` template):
+Enter on a tile launches **full-screen**:
 
-```reg
-Windows Registry Editor Version 5.00
-
-[HKEY_CLASSES_ROOT\novadeck-movies]
-@="URL:NovaDeck Movies"
-"URL Protocol"=""
-
-[HKEY_CLASSES_ROOT\novadeck-movies\shell\open\command]
-@="\"C:\\Path\\To\\YourApp.exe\""
-```
-
-Then add an app with target `novadeck-movies://` — Enter on that tile launches the real
-program. NovaDeck never closes while it runs: **Alt+Tab** back, or **Esc** from any
-quick window.
+- `https://…` → new tab, launcher stays put.
+- `steam://`, `vscode://`, `discord://`, `calculator:`, `ms-paint:`, … → Windows starts the real
+  program; NovaDeck never closes.
+- Any `.exe`: register a protocol once (press `?` for the `.reg` template), then add an app with
+  target `myapp://`.
+- In-launcher tools (Notepad) → **Esc** snaps straight back.
 
 ## Keys
 
 | Key | Action |
 | --- | ------ |
-| ← ↑ → ↓ | Move the white focus ring |
+| ← ↑ → ↓ | Move the white focus ring (works in every screen, player and window) |
 | Enter | Open / play / activate |
-| Esc | Back — from any screen, player or window |
+| Esc | Back from anywhere — every popup also has an on-screen close button |
+| **Ctrl+Shift+H** | **Close the current app and return to the Home launcher** |
 | Any letter | Jump into Search |
 | ⇧M / right-click | Options for the focused app |
-| In player: ←/→, Enter, M, R | Seek 10s, play/pause, mute, restart |
+| In player: ←/→ · Enter · M · R | Seek 10s · play/pause · mute · restart |
 | F11 | Full-screen TV mode |
 
-## Notes
+## Region
 
-- State (apps, watchlist, favorites, progress, settings) lives only on this PC in
-  `localStorage`. **Settings → Factory reset** starts fresh.
-- Settings: 3 wallpapers, 4 accent colors, 12/24h clock, navigation sounds.
+Top-right pill (or **Settings → Content region**): **India** (default — Indian originals,
+Arijit Singh/A.R. Rahman music picks, IN-first tonight schedule), **Global**, **US**, **UK**.
+Catalogues are cached per region (7 days; tonight refreshes daily).
+
+## Data sources (key-less public APIs)
+
+TVMaze (shows, platform buckets, tonight, search) · archive.org (film streams + metadata) ·
+iTunes Search (music previews) · Wikipedia (acclaimed films) · YouTube thumbnails. Offline,
+NovaDeck tells you and your apps/local media keep working.
+
+State lives only on this PC (`localStorage` + IndexedDB for folder handles). **Settings →
+Factory reset** starts fresh.

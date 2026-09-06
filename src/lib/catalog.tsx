@@ -1,10 +1,12 @@
 /* ------------------------------------------------------------------ */
 /*  Live catalog: real data from public, key-less APIs.                */
-/*   - TVMaze      → real shows (art, ratings, schedules) + search     */
-/*   - TVMaze      → real episodes airing tonight (/schedule)          */
-/*   - archive.org → real public-domain film streams + metadata        */
-/*   - Wikipedia   → real acclaimed film metadata + stills             */
-/*  Everything is cached in localStorage.                              */
+/*   - TVMaze /shows     → real shows, bucketed per streaming platform */
+/*   - TVMaze singlesearch → real Indian originals + search            */
+/*   - TVMaze /schedule  → real episodes airing tonight (by region)    */
+/*   - archive.org       → real public-domain film streams + metadata  */
+/*   - iTunes Search     → real tracks with artwork + 30s previews     */
+/*   - Wikipedia         → real acclaimed film metadata + stills       */
+/*  Everything is cached in localStorage per region.                   */
 /* ------------------------------------------------------------------ */
 import {
   createContext,
@@ -17,50 +19,29 @@ import {
   type ReactNode,
 } from "react";
 import {
+  INDIAN_SHOWS,
   PD_FILMS,
+  PLATFORM_MAP,
+  REGIONS,
+  type MusicTrack,
   type PdFilm,
+  type Region,
   type TonightItem,
   type TvShow,
   type WikiFilm,
 } from "../data";
 
-const CACHE_KEY = "novadeck-catalog-v2";
 const DAY = 86400_000;
 
-const SHOW_QUERIES = [
-  "Breaking Bad",
-  "Game of Thrones",
-  "Stranger Things",
-  "The Office",
-  "Friends",
-  "Severance",
-  "The Last of Us",
-  "The Bear",
-  "True Detective",
-  "Westworld",
-  "The Wire",
-  "Better Call Saul",
-  "The Mandalorian",
-  "Dark",
-  "Fleabag",
-  "Succession",
-  "Ted Lasso",
-  "Andor",
-];
-
-const WIKI_TITLES = [
+const WIKI_BASE = [
   "The Godfather",
   "The Shawshank Redemption",
   "The Dark Knight",
   "Pulp Fiction",
   "Inception",
   "Interstellar",
-  "Parasite (2019 film)",
-  "Spirited Away",
   "2001: A Space Odyssey",
-  "Seven Samurai",
   "Casablanca",
-  "Goodfellas",
 ];
 
 function stripHtml(h: string): string {
@@ -73,16 +54,23 @@ function stripHtml(h: string): string {
 
 interface CacheShape {
   ts: number;
-  shows: TvShow[];
+  platforms: Record<string, TvShow[]>;
+  top: TvShow[];
+  indian: TvShow[];
   films: PdFilm[];
   acclaimed: WikiFilm[];
   tonight: TonightItem[];
   tonightDate: string;
+  music: MusicTrack[];
 }
 
-function loadCache(): CacheShape | null {
+function cacheKey(region: string) {
+  return "novadeck-catalog-v3-" + region;
+}
+
+function loadCache(region: string): CacheShape | null {
   try {
-    const raw = localStorage.getItem(CACHE_KEY);
+    const raw = localStorage.getItem(cacheKey(region));
     if (!raw) return null;
     return JSON.parse(raw) as CacheShape;
   } catch {
@@ -127,9 +115,51 @@ function toTvShow(s: Record<string, unknown>): TvShow {
   };
 }
 
-async function fetchShows(): Promise<TvShow[]> {
+async function fetchAllShows(): Promise<{
+  platforms: Record<string, TvShow[]>;
+  top: TvShow[];
+}> {
+  const pages = await Promise.allSettled(
+    [0, 1].map(async (p) => {
+      const r = await fetch(`https://api.tvmaze.com/shows?page=${p}`);
+      if (!r.ok) throw new Error("bad status");
+      return (await r.json()) as Record<string, unknown>[];
+    })
+  );
+  const raw: Record<string, unknown>[] = [];
+  for (const p of pages) if (p.status === "fulfilled") raw.push(...p.value);
+
+  const platforms: Record<string, TvShow[]> = {};
+  for (const k of Object.keys(PLATFORM_MAP)) platforms[k] = [];
+  const seen = new Set<string>();
+  const rated: TvShow[] = [];
+
+  for (const s of raw) {
+    const sh = toTvShow(s);
+    if (seen.has(sh.name)) continue;
+    seen.add(sh.name);
+    const ch =
+      (s as { webChannel?: { name?: string } | null }).webChannel?.name ||
+      (s as { network?: { name?: string } | null }).network?.name ||
+      "";
+    for (const [appId, names] of Object.entries(PLATFORM_MAP)) {
+      if (names.some((n) => n.toLowerCase() === ch.toLowerCase())) {
+        platforms[appId].push(sh);
+        break;
+      }
+    }
+    if ((sh.rating ?? 0) >= 8.2 && sh.img) rated.push(sh);
+  }
+  const sortDesc = (a: TvShow, b: TvShow) => (b.rating ?? 0) - (a.rating ?? 0);
+  for (const k of Object.keys(platforms)) {
+    platforms[k] = platforms[k].sort(sortDesc).slice(0, 14);
+  }
+  return { platforms, top: rated.sort(sortDesc).slice(0, 16) };
+}
+
+async function fetchIndian(): Promise<TvShow[]> {
   const res = await Promise.allSettled(
-    SHOW_QUERIES.map(async (q) => {
+    INDIAN_SHOWS.map(async (q) => {
       const r = await fetch(
         `https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(q)}`
       );
@@ -150,9 +180,9 @@ async function fetchShows(): Promise<TvShow[]> {
 
 /* ------------------------------ tonight ----------------------------- */
 
-async function fetchTonight(): Promise<TonightItem[]> {
+async function fetchTonight(region: Region): Promise<TonightItem[]> {
   const date = new Date().toISOString().slice(0, 10);
-  for (const country of ["US", "GB"]) {
+  for (const country of region.countries) {
     try {
       const r = await fetch(
         `https://api.tvmaze.com/schedule?country=${country}&date=${date}`
@@ -189,8 +219,7 @@ async function fetchTonight(): Promise<TonightItem[]> {
           show: e.show.name,
           episode: e.name || "Episode",
           tag: `S${pad(e.season)}E${pad(e.number)}`,
-          network:
-            e.show.network?.name || e.show.webChannel?.name || "Broadcast",
+          network: e.show.network?.name || e.show.webChannel?.name || "Broadcast",
           img: e.show.image?.medium || e.show.image?.original || null,
           genres: e.show.genres || [],
           site: e.show.officialSite || null,
@@ -221,9 +250,9 @@ async function resolveFilms(base: PdFilm[]): Promise<PdFilm[]> {
   const res = await Promise.allSettled(
     base.map(async (f) => {
       const r = await fetch(`https://archive.org/metadata/${f.item}`);
-      if (!r.ok) return f; // offline — keep the baked-in guess
+      if (!r.ok) return f;
       const j = (await r.json()) as {
-        files?: Array<{ name: string; format?: string; size?: string; length?: string }>;
+        files?: Array<{ name: string; size?: string; length?: string }>;
       };
       const cands = (j.files ?? []).filter((x) => /\.mp4$/i.test(x.name));
       const pick =
@@ -244,11 +273,9 @@ async function resolveFilms(base: PdFilm[]): Promise<PdFilm[]> {
 
 export function streamCandidates(f: PdFilm): string[] {
   const base = `https://archive.org/download/${f.item}/`;
-  const names = [
-    f.file,
-    `${f.item}_512kb.mp4`,
-    `${f.item}.mp4`,
-  ].filter((v, i, a) => a.indexOf(v) === i);
+  const names = [f.file, `${f.item}_512kb.mp4`, `${f.item}.mp4`].filter(
+    (v, i, a) => a.indexOf(v) === i
+  );
   return names.map((n) => base + encodeURIComponent(n));
 }
 
@@ -256,11 +283,61 @@ export function archivePage(f: PdFilm): string {
   return `https://archive.org/details/${f.item}`;
 }
 
+/* ------------------------------- music ------------------------------ */
+
+function toTrack(t: Record<string, unknown>): MusicTrack | null {
+  const tt = t as {
+    trackId?: number;
+    trackName?: string;
+    artistName?: string;
+    artworkUrl100?: string;
+    previewUrl?: string;
+  };
+  if (!tt.trackId || !tt.previewUrl || !tt.trackName) return null;
+  return {
+    id: "it-" + tt.trackId,
+    track: tt.trackName,
+    artist: tt.artistName ?? "",
+    art: (tt.artworkUrl100 ?? "").replace("100x100bb", "400x400bb"),
+    preview: tt.previewUrl,
+  };
+}
+
+async function itunes(term: string, cc: string, limit = 8): Promise<MusicTrack[]> {
+  const r = await fetch(
+    `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&country=${cc}&media=music&entity=song&limit=${limit}`
+  );
+  if (!r.ok) return [];
+  const j = (await r.json()) as { results?: Record<string, unknown>[] };
+  return (j.results ?? [])
+    .map(toTrack)
+    .filter((x): x is MusicTrack => !!x);
+}
+
+async function fetchMusic(region: Region): Promise<MusicTrack[]> {
+  const lists = await Promise.allSettled(
+    region.music.slice(0, 2).map((t) => itunes(t, region.cc))
+  );
+  const out: MusicTrack[] = [];
+  const seen = new Set<string>();
+  for (const l of lists) {
+    if (l.status !== "fulfilled") continue;
+    for (const t of l.value) {
+      if (!seen.has(t.track + t.artist)) {
+        seen.add(t.track + t.artist);
+        out.push(t);
+      }
+    }
+  }
+  return out.slice(0, 16);
+}
+
 /* ------------------------------ acclaimed --------------------------- */
 
-async function fetchAcclaimed(): Promise<WikiFilm[]> {
+async function fetchAcclaimed(region: Region): Promise<WikiFilm[]> {
+  const titles = [...WIKI_BASE, ...region.wikiExtra].slice(0, 12);
   const res = await Promise.allSettled(
-    WIKI_TITLES.map(async (t) => {
+    titles.map(async (t) => {
       const r = await fetch(
         `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`
       );
@@ -326,6 +403,10 @@ export async function searchWiki(q: string): Promise<WikiFilm[]> {
   }));
 }
 
+export async function searchMusic(q: string, cc: string): Promise<MusicTrack[]> {
+  return itunes(q, cc, 8);
+}
+
 export async function wikiSummary(title: string): Promise<WikiFilm | null> {
   try {
     const r = await fetch(
@@ -361,10 +442,13 @@ export async function wikiSummary(title: string): Promise<WikiFilm | null> {
 /* ------------------------------ context ----------------------------- */
 
 export interface Catalog {
-  shows: TvShow[];
+  platforms: Record<string, TvShow[]>;
+  top: TvShow[];
+  indian: TvShow[];
   films: PdFilm[];
   tonight: TonightItem[];
   acclaimed: WikiFilm[];
+  music: MusicTrack[];
   loading: boolean;
   empty: boolean;
   error: boolean;
@@ -379,12 +463,25 @@ export function useCatalog(): Catalog {
   return v;
 }
 
-export function CatalogProvider({ children }: { children: ReactNode }) {
-  const cache = useMemo(loadCache, []);
-  const [shows, setShows] = useState<TvShow[]>(cache?.shows ?? []);
+export function CatalogProvider({
+  regionId,
+  children,
+}: {
+  regionId: string;
+  children: ReactNode;
+}) {
+  const region = REGIONS.find((r) => r.id === regionId) ?? REGIONS[0];
+  const cache = useMemo(() => loadCache(region.id), [region.id]);
+
+  const [platforms, setPlatforms] = useState<Record<string, TvShow[]>>(
+    cache?.platforms ?? {}
+  );
+  const [top, setTop] = useState<TvShow[]>(cache?.top ?? []);
+  const [indian, setIndian] = useState<TvShow[]>(cache?.indian ?? []);
   const [films, setFilms] = useState<PdFilm[]>(cache?.films ?? PD_FILMS);
   const [tonight, setTonight] = useState<TonightItem[]>(cache?.tonight ?? []);
   const [acclaimed, setAcclaimed] = useState<WikiFilm[]>(cache?.acclaimed ?? []);
+  const [music, setMusic] = useState<MusicTrack[]>(cache?.music ?? []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const runId = useRef(0);
@@ -398,21 +495,35 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
     const tonightStale = !cache || cache.tonightDate !== today;
 
     const jobs: Promise<void>[] = [];
-    if (stale || !shows.length)
+    if (stale || !Object.keys(platforms).length)
       jobs.push(
-        fetchShows().then((v) => {
-          if (runId.current === id && v.length) setShows(v);
+        fetchAllShows().then((v) => {
+          if (runId.current !== id) return;
+          setPlatforms(v.platforms);
+          setTop(v.top);
+        })
+      );
+    if (stale || (!indian.length && region.indian))
+      jobs.push(
+        fetchIndian().then((v) => {
+          if (runId.current === id && v.length) setIndian(v);
+        })
+      );
+    if (stale || !music.length)
+      jobs.push(
+        fetchMusic(region).then((v) => {
+          if (runId.current === id && v.length) setMusic(v);
         })
       );
     if (stale || !acclaimed.length)
       jobs.push(
-        fetchAcclaimed().then((v) => {
+        fetchAcclaimed(region).then((v) => {
           if (runId.current === id && v.length) setAcclaimed(v);
         })
       );
     if (tonightStale || !tonight.length)
       jobs.push(
-        fetchTonight().then((v) => {
+        fetchTonight(region).then((v) => {
           if (runId.current === id && v.length) setTonight(v);
         })
       );
@@ -425,35 +536,42 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
     await Promise.allSettled(jobs);
     if (runId.current !== id) return;
     setLoading(false);
-  }, [cache, shows.length, acclaimed.length, tonight.length]);
+  }, [cache, region, platforms, indian.length, music.length, acclaimed.length, tonight.length]);
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, region.id]);
 
   useEffect(() => {
     if (loading) return;
     try {
       const payload: CacheShape = {
         ts: Date.now(),
-        shows,
+        platforms,
+        top,
+        indian,
         films,
         tonight,
         acclaimed,
+        music,
         tonightDate: new Date().toISOString().slice(0, 10),
       };
-      localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
+      localStorage.setItem(cacheKey(region.id), JSON.stringify(payload));
     } catch {
       /* storage unavailable */
     }
-  }, [loading, shows, films, tonight, acclaimed]);
+  }, [loading, region.id, platforms, top, indian, films, tonight, acclaimed, music]);
 
-  const empty = !shows.length && !tonight.length && !acclaimed.length;
+  const empty =
+    !top.length && !tonight.length && !acclaimed.length && !Object.keys(platforms).length;
   const value: Catalog = {
-    shows,
+    platforms,
+    top,
+    indian,
     films,
     tonight,
     acclaimed,
+    music,
     loading,
     empty,
     error,

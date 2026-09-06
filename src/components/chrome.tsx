@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { PROFILES, TABS, type TabId } from "../data";
+import { REGIONS, TABS, type TabId } from "../data";
 import { Icon, Logo } from "../icons";
 import { useStore } from "../lib/store";
 import { cx } from "../lib/util";
@@ -78,7 +78,7 @@ export function Chrome({
   onTop: (i: number) => void;
 }) {
   const { s } = useStore();
-  const p = PROFILES[s.profile];
+  const region = REGIONS.find((r) => r.id === s.settings.region) ?? REGIONS[0];
   return (
     <div className="sticky top-0 z-40">
       <div className="flex items-center justify-between bg-gradient-to-b from-[#05080f] via-[#05080f]/90 to-[#05080f]/0 px-12 pb-3 pt-5">
@@ -102,13 +102,8 @@ export function Chrome({
             Settings
           </TopCell>
           <TopCell i={2} focus={focus} hover={hover} onTop={onTop}>
-            <span
-              className="flex h-6 w-6 items-center justify-center rounded-full font-display text-xs font-bold text-[#0a0f1a]"
-              style={{ background: p.color }}
-            >
-              {p.name[0]}
-            </span>
-            {p.name}
+            <Icon name="globe" className="h-4.5 w-4.5" />
+            {region.label}
           </TopCell>
         </div>
       </div>
@@ -139,7 +134,7 @@ export function Chrome({
         })}
         <div className="ml-auto hidden items-center gap-2 text-xs text-slate-500 lg:flex">
           <Icon name="keyboard" className="h-4 w-4" />
-          <span>Arrows to move · Enter to open · Esc to go back</span>
+          <span>Arrows move · Enter opens · Esc back · Ctrl+Shift+H home</span>
         </div>
       </div>
     </div>
