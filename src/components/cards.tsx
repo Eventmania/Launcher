@@ -4,8 +4,10 @@ import {
   grad,
   hashStr,
   type AppDef,
-  type Channel,
-  type MediaItem,
+  type PdFilm,
+  type TonightItem,
+  type TvShow,
+  type WikiFilm,
 } from "../data";
 import { Icon } from "../icons";
 import { cx, shade } from "../lib/util";
@@ -97,43 +99,126 @@ export function ShelfRow({
   );
 }
 
-/* ------------------------------ Posters ---------------------------- */
+/* --------------------------- real-art cards ------------------------ */
 
-export function Poster({ m, wide = false }: { m: MediaItem; wide?: boolean }) {
+function ArtFrame({
+  art,
+  hue,
+  wide = false,
+  children,
+}: {
+  art: string | null;
+  hue: number;
+  wide?: boolean;
+  children: ReactNode;
+}) {
   return (
     <div
       className={cx(
         "grain relative overflow-hidden rounded-xl shadow-lg ring-1 ring-white/10",
         wide ? "h-[12.5rem] w-[22rem]" : "h-60 w-44"
       )}
-      style={{ background: grad(m.hue) }}
+      style={{ background: grad(hue) }}
     >
-      {m.backdrop && (
+      {art && (
         <img
-          src={m.backdrop}
+          src={art}
           alt=""
           className="absolute inset-0 h-full w-full object-cover opacity-90"
           draggable={false}
         />
       )}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" />
-      <div className="absolute left-3 top-3 rounded-md bg-black/45 px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-slate-200 backdrop-blur-sm">
-        {m.genre}
-      </div>
-      <div className={cx("absolute bottom-3 left-3 right-3", wide && "bottom-4 left-4 right-4")}>
-        <div
-          className={cx(
-            "font-display font-extrabold leading-tight text-white drop-shadow",
-            wide ? "text-2xl" : "text-lg"
-          )}
-        >
-          {m.title}
-        </div>
-        <div className="mt-1 text-[0.7rem] font-medium text-slate-300">
-          {m.year} · {m.maturity} · {fmtDur(m.duration)}
-        </div>
-      </div>
+      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent" />
+      {children}
     </div>
+  );
+}
+
+export function ShowCard({ s }: { s: TvShow }) {
+  return (
+    <ArtFrame art={s.imgThumb} hue={hashStr(s.id) % 360}>
+      <div className="absolute left-2.5 top-2.5 flex items-center gap-1 rounded-md bg-black/50 px-1.5 py-0.5 text-[0.68rem] font-bold text-amber-300 backdrop-blur-sm">
+        <Icon name="star" filled className="h-3 w-3" />
+        {s.rating ? s.rating.toFixed(1) : "—"}
+      </div>
+      <div className="absolute bottom-2.5 left-3 right-3">
+        <div className="font-display text-[1.02rem] font-extrabold leading-tight text-white drop-shadow">
+          {s.name}
+        </div>
+        <div className="mt-0.5 text-[0.68rem] font-medium text-slate-300">
+          {s.year || "—"} · {s.network} · {s.genres[0] ?? "Series"}
+        </div>
+      </div>
+    </ArtFrame>
+  );
+}
+
+export function FilmCard({ f, playable = false }: { f: PdFilm; playable?: boolean }) {
+  return (
+    <ArtFrame art={f.img} hue={hashStr(f.id) % 360}>
+      <div className="absolute left-2.5 top-2.5 rounded-md bg-black/50 px-1.5 py-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-slate-200 backdrop-blur-sm">
+        {f.genres[0]}
+      </div>
+      {playable && (
+        <div
+          className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.62rem] font-bold uppercase tracking-[0.12em] text-[#07101c]"
+          style={{ background: "var(--accent)" }}
+        >
+          <Icon name="play" filled className="h-3 w-3" />
+          Stream
+        </div>
+      )}
+      <div className="absolute bottom-2.5 left-3 right-3">
+        <div className="font-display text-[1.02rem] font-extrabold leading-tight text-white drop-shadow">
+          {f.title}
+        </div>
+        <div className="mt-0.5 text-[0.68rem] font-medium text-slate-300">
+          {f.year} · {f.maturity} · {fmtDur(f.runtimeMin)}
+        </div>
+      </div>
+    </ArtFrame>
+  );
+}
+
+export function WikiCard({ w }: { w: WikiFilm }) {
+  return (
+    <ArtFrame art={w.image} hue={hashStr(w.id) % 360} wide>
+      <div className="absolute left-3 top-3 rounded-md bg-black/50 px-2 py-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-slate-200 backdrop-blur-sm">
+        {w.year || "Film"} · {w.desc.split(" ").slice(0, 3).join(" ") || "Classic"}
+      </div>
+      <div className="absolute bottom-3 left-4 right-4">
+        <div className="font-display text-xl font-extrabold text-white drop-shadow">
+          {w.title}
+        </div>
+        <div className="mt-0.5 truncate text-[0.7rem] font-medium text-slate-300">
+          {w.desc || "Acclaimed film"}
+        </div>
+      </div>
+    </ArtFrame>
+  );
+}
+
+export function EpisodeCard({ ep }: { ep: TonightItem }) {
+  return (
+    <ArtFrame art={ep.img} hue={hashStr(ep.id) % 360} wide>
+      <div className="absolute left-3 top-3 flex items-center gap-2">
+        <span className="flex items-center gap-1.5 rounded-md bg-red-600/90 px-2 py-0.5 text-[0.62rem] font-bold tracking-[0.16em] text-white">
+          <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-white" />
+          TONIGHT
+        </span>
+        <span className="rounded-md bg-black/50 px-2 py-0.5 text-[0.68rem] font-bold text-slate-100 backdrop-blur-sm">
+          {ep.time} · {ep.network}
+        </span>
+      </div>
+      <div className="absolute bottom-3 left-4 right-4">
+        <div className="font-display text-lg font-extrabold leading-tight text-white drop-shadow">
+          {ep.show}
+        </div>
+        <div className="mt-0.5 truncate text-[0.72rem] font-medium text-slate-300">
+          {ep.tag} · “{ep.episode}”
+        </div>
+      </div>
+    </ArtFrame>
   );
 }
 
@@ -143,21 +228,29 @@ export function WideCard({
   bg,
   img,
   icon,
-  progress,
   iconColor,
+  progress,
 }: {
   title: string;
   sub: string;
   bg: string;
-  img?: string;
+  img?: string | null;
   icon?: string;
   iconColor?: string;
   progress?: number;
 }) {
   return (
-    <div className="grain relative h-[12.5rem] w-[22rem] overflow-hidden rounded-xl shadow-lg ring-1 ring-white/10" style={{ background: bg }}>
+    <div
+      className="grain relative h-[12.5rem] w-[22rem] overflow-hidden rounded-xl shadow-lg ring-1 ring-white/10"
+      style={{ background: bg }}
+    >
       {img && (
-        <img src={img} alt="" className="absolute inset-0 h-full w-full object-cover" draggable={false} />
+        <img
+          src={img}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+          draggable={false}
+        />
       )}
       {icon && (
         <div className="absolute right-5 top-5 flex h-14 w-14 items-center justify-center rounded-xl bg-black/35 backdrop-blur-sm">
@@ -180,7 +273,7 @@ export function WideCard({
         <div className="absolute bottom-0 left-0 right-0 h-[5px] bg-white/15">
           <div
             className="h-full rounded-r-full"
-            style={{ width: `${progress}%`, background: "var(--accent)" }}
+            style={{ width: `${Math.min(100, progress)}%`, background: "var(--accent)" }}
           />
         </div>
       )}
@@ -256,100 +349,52 @@ export function AddTile() {
   );
 }
 
-/* ----------------------------- Channels ---------------------------- */
-
-export function ChannelCard({ ch }: { ch: Channel }) {
-  return (
-    <div className="relative h-[12rem] w-[21rem] overflow-hidden rounded-xl bg-[#0d1420] ring-1 ring-white/10">
-      <div
-        className="absolute inset-x-0 top-0 h-1 opacity-80"
-        style={{ background: ch.color }}
-      />
-      <div className="flex items-center gap-3 px-5 pt-5">
-        <span
-          className="flex h-11 w-11 items-center justify-center rounded-full font-display text-lg font-extrabold text-[#0a0f1a]"
-          style={{ background: ch.color }}
-        >
-          {ch.name[0]}
-        </span>
-        <div>
-          <div className="font-display text-base font-bold text-white">
-            {ch.name}
-          </div>
-          <div className="text-xs text-slate-400">{ch.tag}</div>
-        </div>
-        <span className="ml-auto flex items-center gap-1.5 rounded-md bg-red-600/90 px-2 py-0.5 text-[0.65rem] font-bold tracking-[0.18em] text-white">
-          <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-white" />
-          LIVE
-        </span>
-      </div>
-      <div className="px-5 pt-4">
-        <div className="text-[0.65rem] font-bold uppercase tracking-[0.2em] text-slate-500">
-          On now
-        </div>
-        <div className="mt-0.5 truncate font-display text-lg font-semibold text-slate-100">
-          {ch.now}
-        </div>
-        <div className="mt-1 truncate text-xs text-slate-500">
-          Up next · {ch.next}
-        </div>
-      </div>
-      <div className="absolute bottom-4 left-5 right-5">
-        <div className="mb-1.5 flex justify-between text-[0.65rem] font-semibold text-slate-400">
-          <span>{ch.progress}% watched</span>
-          <span style={{ color: ch.color }}>{ch.tag}</span>
-        </div>
-        <div className="h-1 overflow-hidden rounded-full bg-white/10">
-          <div
-            className="h-full rounded-full"
-            style={{ width: `${ch.progress}%`, background: ch.color }}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ------------------------------- Hero ------------------------------ */
 
+export type HeroItem =
+  | { kind: "film"; film: PdFilm }
+  | { kind: "show"; show: TvShow };
+
 export function Hero({
-  m,
+  item,
   slide,
   total,
   focus,
   hover,
-  onPlay,
+  onPrimary,
   onList,
   listed,
   paused,
 }: {
-  m: MediaItem;
+  item: HeroItem;
   slide: number;
   total: number;
   focus: [number, number];
   hover: (r: number, c: number) => void;
-  onPlay: () => void;
+  onPrimary: () => void;
   onList: () => void;
   listed: boolean;
   paused: boolean;
 }) {
-  const match = 84 + (hashStr(m.id) % 13);
+  const isFilm = item.kind === "film";
+  const title = isFilm ? item.film.title : item.show.name;
+  const art = isFilm ? item.film.img : item.show.img;
+  const desc = isFilm ? item.film.desc : item.show.summary;
+  const match = 84 + (hashStr(title) % 13);
+  const uid = isFilm ? item.film.id : item.show.id;
   return (
     <div className="relative mx-12 mt-2 h-[24rem] overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/10">
-      <div key={m.id} className="slide-hero absolute inset-0">
-        {m.backdrop ? (
+      <div key={uid} className="slide-hero absolute inset-0 bg-[#0a0f1a]">
+        {art && (
           <img
-            key={m.id + "-img"}
-            src={m.backdrop}
+            src={art}
             alt=""
             className="animate-kb h-full w-full object-cover"
             draggable={false}
           />
-        ) : (
-          <div className="h-full w-full" style={{ background: grad(m.hue) }} />
         )}
       </div>
-      <div className="absolute inset-0 bg-gradient-to-r from-[#070b13] via-[#070b13]/60 to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-r from-[#070b13] via-[#070b13]/65 to-[#070b13]/10" />
       <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[#070b13] to-transparent" />
       <div className="grain absolute inset-0" />
 
@@ -358,24 +403,48 @@ export function Hero({
           className="text-[0.7rem] font-bold uppercase tracking-[0.32em]"
           style={{ color: "var(--accent)" }}
         >
-          Featured {m.type === "movie" ? "Film" : "Series"}
+          {isFilm ? "Real Cinema · Free Stream" : `Featured Series · ${item.show.network}`}
         </div>
         <h1 className="mt-2 max-w-2xl font-display text-6xl font-extrabold leading-[1.02] tracking-tight text-white drop-shadow-lg">
-          {m.title}
+          {title}
         </h1>
         <div className="mt-3 flex items-center gap-3 text-sm font-medium text-slate-300">
-          <span className="font-bold" style={{ color: "var(--accent)" }}>
-            {match}% Match
-          </span>
-          <span>{m.year}</span>
-          <span className="rounded border border-white/30 px-1.5 py-px text-xs">
-            {m.maturity}
-          </span>
-          <span>{fmtDur(m.duration)}</span>
-          <span className="rounded bg-white/10 px-1.5 py-px text-xs">4K</span>
+          {isFilm ? (
+            <>
+              <span>{item.film.year}</span>
+              <span className="rounded border border-white/30 px-1.5 py-px text-xs">
+                {item.film.maturity}
+              </span>
+              <span>{fmtDur(item.film.runtimeMin)}</span>
+              <span className="rounded bg-white/10 px-1.5 py-px text-xs">
+                {item.film.genres.join(" · ")}
+              </span>
+              <span className="rounded bg-white/10 px-1.5 py-px text-xs">Public domain</span>
+            </>
+          ) : (
+            <>
+              <span className="flex items-center gap-1 font-bold text-amber-300">
+                <Icon name="star" filled className="h-4 w-4" />
+                {item.show.rating ? item.show.rating.toFixed(1) : "—"}
+              </span>
+              <span>{item.show.year || "—"}</span>
+              <span className="rounded border border-white/30 px-1.5 py-px text-xs">
+                {item.show.status}
+              </span>
+              <span>{item.show.runtime}m eps</span>
+              <span className="rounded bg-white/10 px-1.5 py-px text-xs">
+                {item.show.genres.slice(0, 2).join(" · ")}
+              </span>
+            </>
+          )}
+          {!isFilm && (
+            <span className="font-bold" style={{ color: "var(--accent)" }}>
+              {match}% Match
+            </span>
+          )}
         </div>
         <p className="mt-3 max-w-xl text-[0.95rem] leading-relaxed text-slate-300 line-clamp-2">
-          {m.desc}
+          {desc}
         </p>
         <div className="mt-5 flex items-center gap-4">
           <Cell
@@ -383,17 +452,14 @@ export function Hero({
             c={0}
             focus={focus}
             hover={hover}
-            onClick={onPlay}
+            onClick={onPrimary}
             soft
-            className="flex items-center gap-2.5 rounded-full px-8 py-3 font-display text-base font-bold text-[#07101c]"
+            className="relative flex items-center gap-2.5 rounded-full px-8 py-3 font-display text-base font-bold text-[#07101c]"
           >
-            <span
-              className="absolute inset-0 rounded-full"
-              style={{ background: "var(--accent)" }}
-            />
+            <span className="absolute inset-0 rounded-full" style={{ background: "var(--accent)" }} />
             <span className="relative flex items-center gap-2.5">
-              <Icon name="play" filled className="h-5 w-5" />
-              Play
+              <Icon name={isFilm ? "play" : "info"} filled={isFilm} className="h-5 w-5" />
+              {isFilm ? "Play" : "Details"}
             </span>
           </Cell>
           <Cell
@@ -427,7 +493,7 @@ export function Hero({
             {i === slide && (
               <span className="h-[3px] w-10 overflow-hidden rounded-full bg-white/15">
                 <span
-                  key={m.id + "-bar"}
+                  key={uid + "-bar"}
                   className="hero-progress block h-full rounded-full"
                   style={{
                     background: "var(--accent)",
@@ -440,5 +506,20 @@ export function Hero({
         ))}
       </div>
     </div>
+  );
+}
+
+/* ------------------------------ skeleton --------------------------- */
+
+export function ShelfSkeleton({ delay = 0 }: { delay?: number }) {
+  return (
+    <section className="rise px-12" style={{ animationDelay: `${delay}ms` }}>
+      <div className="shimmer mb-4 h-5 w-48 rounded-md" />
+      <div className="flex gap-5">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="shimmer h-60 w-44 shrink-0 rounded-xl" />
+        ))}
+      </div>
+    </section>
   );
 }

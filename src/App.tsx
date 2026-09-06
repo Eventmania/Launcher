@@ -1,23 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ACCENTS,
-  WALLS,
-  type AppDef,
-  type Channel,
-  type MediaItem,
-  type TabId,
-} from "./data";
-import { Icon } from "./icons";
-import { StoreProvider, useStore } from "./lib/store";
-import { UICtx, type Layer } from "./lib/ui";
-import { fireProtocol } from "./lib/util";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WALLS, type AppDef, type PdFilm, type TabId, type TonightItem, type TvShow, type WikiFilm } from "./data";
+import { CatalogProvider, useCatalog } from "./lib/catalog";
+import { useStore, StoreProvider } from "./lib/store";
+import { UICtx, type Layer, type UIApi } from "./lib/ui";
 import {
   AppsScreen,
   HomeScreen,
   LibraryScreen,
-  LiveScreen,
   MoviesScreen,
   ShowsScreen,
+  TonightScreen,
 } from "./components/screens";
 import {
   AddAppOverlay,
@@ -28,162 +20,221 @@ import {
   SearchOverlay,
   SettingsOverlay,
 } from "./components/overlays";
-import { LiveOverlay, MiniAppOverlay, PlayerOverlay } from "./components/player";
+import { PlayerLayer } from "./components/player";
+import { Logo } from "./icons";
+import { setSoundEnabled } from "./lib/sound";
 
-interface ToastT {
+interface Toast {
   id: number;
   msg: string;
   icon?: string;
 }
 
+function Wallpaper() {
+  const { s } = useStore();
+  return (
+    <div className="fixed inset-0 -z-10 overflow-hidden bg-[#05080f]">
+      <img
+        key={s.settings.wall}
+        src={WALLS[s.settings.wall]}
+        alt=""
+        className="animate-wall h-full w-full object-cover opacity-55"
+        draggable={false}
+      />
+      <div className="absolute inset-0 bg-gradient-to-b from-[#05080f]/72 via-[#05080f]/45 to-[#05080f]/92" />
+      <div className="absolute inset-0 bg-[radial-gradient(120%_90%_at_50%_-10%,transparent_30%,#05080f_100%)]" />
+    </div>
+  );
+}
+
+function HintBar() {
+  const keys: [string, string][] = [
+    ["← → ↑ ↓", "Navigate"],
+    ["Enter", "Open"],
+    ["Esc", "Back"],
+    ["Type", "Search"],
+    ["⇧M", "App options"],
+    ["?", "Help"],
+  ];
+  return (
+    <div className="fixed bottom-4 left-1/2 z-30 flex -translate-x-1/2 items-center gap-4 rounded-full border border-white/10 bg-[#0a0f1a]/85 px-6 py-2.5 shadow-xl backdrop-blur">
+      {keys.map(([k, v], i) => (
+        <span key={k} className="flex items-center gap-2 text-xs text-slate-400">
+          {i > 0 && <span className="h-3 w-px bg-white/10" />}
+          <kbd className="rounded bg-white/10 px-1.5 py-0.5 font-display text-[0.68rem] font-semibold text-slate-200">
+            {k}
+          </kbd>
+          {v}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function Toasts({ list }: { list: Toast[] }) {
+  return (
+    <div className="pointer-events-none fixed bottom-20 right-10 z-[60] flex flex-col gap-2">
+      {list.map((t) => (
+        <div
+          key={t.id}
+          className="toast-in flex items-center gap-3 rounded-xl border border-white/10 bg-[#0c1220]/95 px-4 py-3 shadow-2xl backdrop-blur"
+        >
+          {t.icon && (
+            <span
+              className="flex h-7 w-7 items-center justify-center rounded-lg"
+              style={{ background: "color-mix(in srgb, var(--accent) 22%, transparent)" }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-4 w-4"
+                fill="none"
+                stroke="var(--accent)"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+            </span>
+          )}
+          <span className="text-sm font-medium text-slate-100">{t.msg}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <div className="flex min-h-full flex-col items-center justify-center gap-6 px-10 text-center">
+      <div className="flex items-center gap-3">
+        <Logo className="h-10 w-10 drop-shadow-[0_0_18px_var(--accent)]" />
+        <span className="font-display text-3xl font-extrabold text-white">
+          Nova<span style={{ color: "var(--accent)" }}>Deck</span>
+        </span>
+      </div>
+      <div className="flex items-center gap-2.5 text-slate-400">
+        <span className="spin-slow h-4 w-4 rounded-full border-2 border-white/20 border-t-white" />
+        <span className="text-sm font-medium">
+          Loading real shows, tonight's schedule and free cinema…
+        </span>
+      </div>
+      <div className="grid w-full max-w-3xl grid-cols-4 gap-4">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className="shimmer h-40 rounded-xl" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ErrorScreen({ retry }: { retry: () => void }) {
+  return (
+    <div className="flex min-h-full flex-col items-center justify-center gap-5 px-10 text-center">
+      <Logo className="h-10 w-10" />
+      <div className="font-display text-2xl font-extrabold text-white">
+        Couldn't reach the live catalog
+      </div>
+      <p className="max-w-md text-sm leading-relaxed text-slate-400">
+        TVMaze, archive.org and Wikipedia didn't respond. Check your network connection and try
+        again — your installed apps and saved progress are still here.
+      </p>
+      <button
+        onClick={retry}
+        className="rounded-full px-7 py-3 font-display text-sm font-bold text-[#07101c]"
+        style={{ background: "var(--accent)" }}
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
 function Shell() {
   const { s, d } = useStore();
+  const cat = useCatalog();
   const [tab, setTab] = useState<TabId>("home");
   const [layer, setLayer] = useState<Layer>(null);
-  const [toasts, setToasts] = useState<ToastT[]>([]);
-  const [hint, setHint] = useState(true);
-  const idRef = useRef(1);
-
-  const toast = useCallback((msg: string, icon?: string) => {
-    const id = idRef.current++;
-    setToasts((t) => [...t.slice(-2), { id, msg, icon }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2800);
-  }, []);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastId = useRef(0);
 
   useEffect(() => {
-    const h = () => setHint(false);
-    window.addEventListener("keydown", h, { once: true, capture: true });
-    const t = setTimeout(h, 14000);
-    return () => {
-      window.removeEventListener("keydown", h);
-      clearTimeout(t);
-    };
-  }, []);
+    document.documentElement.style.setProperty(
+      "--accent",
+      ["#63b3ff", "#ff7a59", "#3ddc97", "#f4c542"][s.settings.accent] ?? "#63b3ff"
+    );
+    setSoundEnabled(s.settings.sound);
+  }, [s.settings.accent, s.settings.sound]);
 
-  const ui = useMemo(() => {
-    const openApp = (app: AppDef) => {
-      d({ type: "launch", id: app.id });
-      if (app.kind === "url") {
-        window.open(app.target, "_blank", "noopener");
-        toast(`Opening ${app.name} in a new tab`, "external");
-      } else if (app.kind === "protocol") {
-        fireProtocol(app.target);
-        setLayer({ type: "launch", app });
-      } else {
-        setLayer({ type: "miniapp", app });
-      }
-    };
+  const toast = (msg: string, icon?: string) => {
+    const id = ++toastId.current;
+    setToasts((t) => [...t.slice(-2), { id, msg, icon }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2600);
+  };
+
+  const ui = useMemo<UIApi>(() => {
+    const close = () => setLayer(null);
     return {
       tab,
       setTab,
       layer,
       setLayer,
-      close: () => setLayer(null),
+      close,
       toast,
-      openApp,
-      openMedia: (m: MediaItem) => setLayer({ type: "details", media: m }),
-      playMedia: (m: MediaItem) => {
-        d({ type: "launch", id: m.id });
-        setLayer({ type: "player", media: m });
+      openApp: (a: AppDef) => {
+        d({ type: "launch", id: a.id });
+        if (a.kind === "sim") setLayer({ type: "miniapp", app: a });
+        else setLayer({ type: "launch", app: a });
       },
-      playLive: (c: Channel) => setLayer({ type: "live", channel: c }),
+      openFilm: (f: PdFilm) => setLayer({ type: "film", film: f }),
+      openShow: (x: TvShow) => setLayer({ type: "show", show: x }),
+      openEpisode: (e: TonightItem) => setLayer({ type: "episode", ep: e }),
+      openWiki: (w: WikiFilm) => setLayer({ type: "wiki", wiki: w }),
+      playFilm: (f: PdFilm) => {
+        d({ type: "launch", id: f.id });
+        setLayer({ type: "player", film: f });
+      },
       openSearch: (seed?: string) => setLayer({ type: "search", seed }),
       openSettings: () => setLayer({ type: "settings" }),
       openAddApp: (a?: AppDef) => setLayer({ type: "addApp", app: a }),
       openAppOptions: (a: AppDef) => setLayer({ type: "appOptions", app: a }),
     };
-  }, [tab, layer, toast, d]);
+  }, [tab, layer, d]);
 
   return (
     <UICtx.Provider value={ui}>
-      <div
-        className="font-body fixed inset-0 overflow-hidden text-slate-100"
-        style={{ "--accent": ACCENTS[s.settings.accent] } as React.CSSProperties}
-      >
-        {/* ambient wallpaper */}
-        <div key={s.settings.wall} className="fade-in absolute inset-0">
-          <img
-            src={WALLS[s.settings.wall]}
-            alt=""
-            className="animate-wall h-full w-full object-cover opacity-75"
-            draggable={false}
-          />
-        </div>
-        <div className="absolute inset-0 bg-gradient-to-b from-[#05080f]/85 via-[#05080f]/55 to-[#05080f]" />
-        <div
-          className="absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(120% 90% at 50% 0%, transparent 42%, rgba(3,5,10,0.8) 100%)",
-          }}
-        />
-
-        {/* stage */}
-        <div className="no-scrollbar relative z-10 h-full overflow-y-auto overflow-x-hidden">
-          {tab === "home" && <HomeScreen />}
-          {tab === "live" && <LiveScreen />}
-          {tab === "movies" && <MoviesScreen />}
-          {tab === "shows" && <ShowsScreen />}
-          {tab === "apps" && <AppsScreen />}
-          {tab === "library" && <LibraryScreen />}
-        </div>
-
-        {/* overlays */}
-        {layer && layer.type === "search" && <SearchOverlay seed={layer.seed} />}
-        {layer && layer.type === "settings" && <SettingsOverlay />}
-        {layer && layer.type === "help" && <HelpOverlay />}
-        {layer && layer.type === "details" && <DetailsOverlay m={layer.media} />}
-        {layer && layer.type === "player" && <PlayerOverlay m={layer.media} />}
-        {layer && layer.type === "live" && <LiveOverlay ch={layer.channel} />}
-        {layer && layer.type === "appOptions" && <AppOptionsOverlay app={layer.app} />}
-        {layer && layer.type === "addApp" && <AddAppOverlay app={layer.app} />}
-        {layer && layer.type === "launch" && <LaunchOverlay app={layer.app} />}
-        {layer && layer.type === "miniapp" && <MiniAppOverlay app={layer.app} />}
-
-        {/* toasts */}
-        <div className="pointer-events-none fixed bottom-8 left-1/2 z-[70] flex -translate-x-1/2 flex-col items-center gap-2">
-          {toasts.map((t) => (
-            <div
-              key={t.id}
-              className="toast-in flex items-center gap-2.5 rounded-full bg-[#101a2b]/95 px-5 py-2.5 text-sm font-semibold text-slate-100 shadow-2xl ring-1 ring-white/15"
-            >
-              {t.icon && (
-                <span style={{ color: "var(--accent)" }}>
-                  <Icon name={t.icon} className="h-4 w-4" />
-                </span>
-              )}
-              {t.msg}
-            </div>
-          ))}
-        </div>
-
-        {/* onboarding hint */}
-        {hint && !layer && (
-          <div className="toast-in fixed bottom-8 left-12 z-40 flex items-center gap-4 rounded-xl bg-[#0c1322]/90 px-5 py-3.5 text-[0.8rem] font-medium text-slate-300 shadow-2xl ring-1 ring-white/10">
-            <span className="flex items-center gap-1.5">
-              {["←", "↑", "↓", "→"].map((k) => (
-                <kbd key={k} className="rounded border border-white/20 bg-white/[0.05] px-1.5 py-0.5 font-display text-xs font-bold text-slate-200">
-                  {k}
-                </kbd>
-              ))}
-              move
-            </span>
-            <span className="flex items-center gap-1.5">
-              <kbd className="rounded border border-white/20 bg-white/[0.05] px-1.5 py-0.5 font-display text-xs font-bold text-slate-200">Enter</kbd>
-              open
-            </span>
-            <span className="flex items-center gap-1.5">
-              <kbd className="rounded border border-white/20 bg-white/[0.05] px-1.5 py-0.5 font-display text-xs font-bold text-slate-200">Esc</kbd>
-              back
-            </span>
-            <span className="hidden items-center gap-1.5 md:flex">
-              <kbd className="rounded border border-white/20 bg-white/[0.05] px-1.5 py-0.5 font-display text-xs font-bold text-slate-200">⇧M</kbd>
-              app options
-            </span>
-            <span className="hidden text-slate-500 lg:inline">…or just start typing to search</span>
-          </div>
+      <Wallpaper />
+      <div className="grain relative min-h-screen overflow-x-hidden text-slate-100">
+        {cat.loading && cat.empty ? (
+          <LoadingScreen />
+        ) : cat.error && cat.empty ? (
+          <ErrorScreen retry={cat.reload} />
+        ) : (
+          <>
+            {tab === "home" && <HomeScreen />}
+            {tab === "tonight" && <TonightScreen />}
+            {tab === "movies" && <MoviesScreen />}
+            {tab === "shows" && <ShowsScreen />}
+            {tab === "apps" && <AppsScreen />}
+            {tab === "library" && <LibraryScreen />}
+          </>
         )}
+
+        {layer?.type === "search" && <SearchOverlay />}
+        {(layer?.type === "film" ||
+          layer?.type === "show" ||
+          layer?.type === "episode" ||
+          layer?.type === "wiki") && <DetailsOverlay />}
+        {layer?.type === "settings" && <SettingsOverlay />}
+        {layer?.type === "help" && <HelpOverlay />}
+        {layer?.type === "appOptions" && <AppOptionsOverlay />}
+        {layer?.type === "addApp" && <AddAppOverlay />}
+        {layer?.type === "launch" && <LaunchOverlay />}
+        <PlayerLayer />
+
+        {layer === null && !(cat.loading && cat.empty) && <HintBar />}
       </div>
+      <Toasts list={toasts} />
     </UICtx.Provider>
   );
 }
@@ -191,7 +242,9 @@ function Shell() {
 export default function App() {
   return (
     <StoreProvider>
-      <Shell />
+      <CatalogProvider>
+        <Shell />
+      </CatalogProvider>
     </StoreProvider>
   );
 }

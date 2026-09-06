@@ -15,6 +15,14 @@ export function clampN(v: number, a: number, b: number) {
   return Math.max(a, Math.min(b, v));
 }
 
+/** Classify a launch target. */
+export function detectKind(target: string): "url" | "protocol" | "sim" {
+  const t = target.trim();
+  if (!t) return "sim";
+  if (/^https?:\/\//i.test(t)) return "url";
+  return "protocol";
+}
+
 /** Ask Windows to open a custom URI protocol (steam://, myapp://, …). */
 export function fireProtocol(target: string) {
   try {

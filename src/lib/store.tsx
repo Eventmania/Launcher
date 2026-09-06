@@ -32,20 +32,15 @@ export interface AppState {
   profile: number;
 }
 
-const KEY = "novadeck-state-v1";
+const KEY = "novadeck-state-v2";
 
 function defaults(): AppState {
   return {
     apps: DEFAULT_APPS,
-    recents: [
-      { id: "m1", ts: Date.now() - 3600_000 },
-      { id: "steam", ts: Date.now() - 7200_000 },
-      { id: "m7", ts: Date.now() - 86400_000 },
-      { id: "youtube", ts: Date.now() - 90000_000 },
-    ],
-    mediaProgress: { m1: 3420, m7: 1350 },
-    favMedia: ["m3", "s3"],
-    favApps: ["steam", "spotify"],
+    recents: [],
+    mediaProgress: {},
+    favMedia: [],
+    favApps: [],
     settings: { wall: 0, accent: 0, clock24: true, sound: true },
     profile: 0,
   };

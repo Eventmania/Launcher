@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  CHANNELS,
   PROFILES,
   TABS,
   fmtClock,
   grad,
   hashStr,
-  heroMedia,
-  MEDIA,
   type AppDef,
-  type MediaItem,
+  type PdFilm,
   type TabId,
+  type TonightItem,
+  type TvShow,
+  type WikiFilm,
 } from "../data";
+import { useCatalog } from "../lib/catalog";
 import { recallFocus, rememberFocus, useTvNav, type EdgeDir } from "../lib/keys";
 import { sfx } from "../lib/sound";
 import { useStore } from "../lib/store";
@@ -21,11 +22,15 @@ import {
   AppBadge,
   AppTile,
   Cell,
-  ChannelCard,
+  EpisodeCard,
+  FilmCard,
   Hero,
-  Poster,
   ShelfRow,
+  ShelfSkeleton,
+  ShowCard,
   WideCard,
+  WikiCard,
+  type HeroItem,
 } from "./cards";
 import { Chrome } from "./chrome";
 
@@ -36,18 +41,12 @@ interface Item {
   ctx?: () => void;
 }
 
-interface Shelf {
-  title: string;
-  kicker?: string;
-  items: Item[];
-}
-
 const APP_COLS = 6;
-const LIVE_COLS = 4;
+const GRID_COLS = 4;
 
 /* ------------------------------------------------------------------ */
 /*  Shared screen scaffolding: chrome rows (top bar + tabs) on top,    */
-/*  content rows below. Rows 0/1 behave identically on every tab.      */
+/*  content rows below. Rows 0/1 are identical on every tab.           */
 /* ------------------------------------------------------------------ */
 
 function useScreen(
@@ -149,7 +148,7 @@ function useScreen(
     />
   );
 
-  return { nav, focus, chrome, active, baseEnter };
+  return { nav, focus, chrome, active, ui, baseEnter };
 }
 
 function ScreenBody({
@@ -161,7 +160,7 @@ function ScreenBody({
   children,
 }: {
   chrome: ReactNode;
-  shelves: Shelf[];
+  shelves: { title: string; kicker?: string; items: Item[] }[];
   focus: [number, number];
   hover: (r: number, c: number) => void;
   rowOffset: number;
@@ -172,7 +171,12 @@ function ScreenBody({
       {chrome}
       {children}
       {shelves.map((sh, ri) => (
-        <ShelfRow key={sh.title} title={sh.title} kicker={sh.kicker} delay={ri * 70}>
+        <ShelfRow
+          key={sh.title}
+          title={sh.title}
+          kicker={sh.kicker}
+          delay={ri * 70}
+        >
           {sh.items.map((it, ci) => (
             <Cell
               key={it.key}
@@ -194,6 +198,15 @@ function ScreenBody({
 
 /* ------------------------------ helpers ---------------------------- */
 
+function appTileItem(a: AppDef, ui: UIApi, fav: boolean): Item {
+  return {
+    key: "at-" + a.id,
+    node: <AppTile app={a} fav={fav} />,
+    act: () => ui.openApp(a),
+    ctx: () => ui.openAppOptions(a),
+  };
+}
+
 function appBadgeItem(a: AppDef, ui: UIApi): Item {
   return {
     key: "ab-" + a.id,
@@ -203,12 +216,53 @@ function appBadgeItem(a: AppDef, ui: UIApi): Item {
   };
 }
 
-function mediaItem(m: MediaItem, ui: UIApi): Item {
-  return {
-    key: "m-" + m.id,
-    node: <Poster m={m} />,
-    act: () => ui.openMedia(m),
-  };
+const filmItem = (f: PdFilm, ui: UIApi): Item => ({
+  key: "fi-" + f.id,
+  node: <FilmCard f={f} playable />,
+  act: () => ui.openFilm(f),
+});
+
+const showItem = (x: TvShow, ui: UIApi): Item => ({
+  key: "si-" + x.id,
+  node: <ShowCard s={x} />,
+  act: () => ui.openShow(x),
+});
+
+const episodeItem = (e: TonightItem, ui: UIApi): Item => ({
+  key: "ei-" + e.id,
+  node: <EpisodeCard ep={e} />,
+  act: () => ui.openEpisode(e),
+});
+
+const wikiItem = (w: WikiFilm, ui: UIApi): Item => ({
+  key: "wi-" + w.id,
+  node: <WikiCard w={w} />,
+  act: () => ui.openWiki(w),
+});
+
+function SectionHeader({ title, kicker, badge }: { title: string; kicker?: string; badge?: ReactNode }) {
+  return (
+    <div className="mb-4 flex items-center gap-3">
+      {badge}
+      <span className="h-4 w-1 rounded-full" style={{ background: "var(--accent)" }} />
+      <h2 className="font-display text-[1.05rem] font-bold tracking-wide text-slate-100">
+        {title}
+      </h2>
+      {kicker && (
+        <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+          {kicker}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function EmptyNote({ text }: { text: string }) {
+  return (
+    <div className="mx-12 mb-8 rounded-xl border border-dashed border-white/15 bg-white/[0.02] px-6 py-5 text-sm text-slate-400">
+      {text}
+    </div>
+  );
 }
 
 /* ------------------------------- HOME ------------------------------ */
@@ -216,33 +270,44 @@ function mediaItem(m: MediaItem, ui: UIApi): Item {
 export function HomeScreen() {
   const { s, d } = useStore();
   const ui = useUI();
+  const cat = useCatalog();
   const [slide, setSlide] = useState(0);
-  const heroes = heroMedia;
 
-  const contMedia = Object.entries(s.mediaProgress)
-    .map(([id, t]) => ({ m: MEDIA.find((x) => x.id === id), t }))
+  const topShows = [...cat.shows].sort(
+    (a, b) => (b.rating ?? 0) - (a.rating ?? 0)
+  );
+
+  const heroes: HeroItem[] = [];
+  for (let i = 0; i < 3; i++) {
+    if (cat.films[i]) heroes.push({ kind: "film", film: cat.films[i] });
+    if (topShows[i]) heroes.push({ kind: "show", show: topShows[i] });
+  }
+
+  const contFilms = Object.entries(s.mediaProgress)
+    .map(([id, t]) => ({ f: cat.films.find((x) => x.id === id), t }))
     .filter(
-      (x): x is { m: MediaItem; t: number } =>
-        !!x.m && x.t > 30 && x.t < x.m.duration * 60 * 0.95
+      (x): x is { f: PdFilm; t: number } =>
+        !!x.f && x.t > 30 && x.t < x.f.runtimeMin * 60 * 0.95
     );
+
   const contApps = s.recents
     .map((r) => s.apps.find((a) => a.id === r.id))
     .filter((a): a is AppDef => !!a)
     .slice(0, 6);
 
   const continueItems: Item[] = [
-    ...contMedia.map(({ m, t }) => ({
-      key: "cm-" + m.id,
+    ...contFilms.map(({ f, t }) => ({
+      key: "cf-" + f.id,
       node: (
         <WideCard
-          title={m.title}
-          sub={`Resume · ${fmtClock(t)} in`}
-          bg={grad(m.hue)}
-          img={m.backdrop}
-          progress={(t / (m.duration * 60)) * 100}
+          title={f.title}
+          sub={`Resume · ${fmtClock(t)} watched`}
+          bg={grad(hashStr(f.id) % 360)}
+          img={f.img}
+          progress={(t / (f.runtimeMin * 60)) * 100}
         />
       ),
-      act: () => ui.playMedia(m),
+      act: () => ui.playFilm(f),
     })),
     ...contApps.map((a) => ({
       key: "ca-" + a.id,
@@ -253,7 +318,6 @@ export function HomeScreen() {
           bg={`linear-gradient(140deg, ${a.color}, #0c1220 85%)`}
           icon={a.icon}
           iconColor="#ffffff"
-          progress={10 + (hashStr(a.id) % 78)}
         />
       ),
       act: () => ui.openApp(a),
@@ -261,42 +325,42 @@ export function HomeScreen() {
     })),
   ];
 
-  const topApps = [...s.apps]
-    .sort(
-      (a, b) =>
-        (s.favApps.includes(b.id) ? 1 : 0) - (s.favApps.includes(a.id) ? 1 : 0) ||
-        a.name.localeCompare(b.name)
-    )
-    .slice(0, 12);
-
-  const shelves: Shelf[] = [
-    { title: "Continue Watching", kicker: "Jump back in", items: continueItems },
+  const shelves = [
     {
-      title: "Top Apps",
-      kicker: "Pinned & favorites",
-      items: topApps.map((a) => appBadgeItem(a, ui)),
+      title: "Continue Watching",
+      kicker: "Real progress · saved on this PC",
+      items: continueItems,
     },
     {
-      title: "Entertainment",
-      kicker: "Web · Games · Social",
-      items: s.apps
-        .filter((a) => ["Entertainment", "Games", "Social", "Web"].includes(a.cat))
-        .map((a) => appBadgeItem(a, ui)),
+      title: "On Tonight",
+      kicker: "Live schedule · TVMaze",
+      items: cat.tonight.slice(0, 8).map((e) => episodeItem(e, ui)),
     },
     {
-      title: "Trending Movies",
-      items: MEDIA.filter((m) => m.type === "movie").map((m) => mediaItem(m, ui)),
+      title: "Real Cinema",
+      kicker: "Public-domain classics · stream free",
+      items: cat.films.map((f) => filmItem(f, ui)),
     },
     {
-      title: "Binge-worthy Shows",
-      items: MEDIA.filter((m) => m.type === "show").map((m) => mediaItem(m, ui)),
+      title: "Acclaimed Films",
+      kicker: "Real data · Wikipedia",
+      items: cat.acclaimed.map((w) => wikiItem(w, ui)),
+    },
+    {
+      title: "Top-Rated Shows",
+      kicker: "Live data · TVMaze",
+      items: topShows.slice(0, 12).map((x) => showItem(x, ui)),
     },
     {
       title: "Your Apps",
-      kicker: "Added by you",
+      kicker: "Launch real programs",
       items: [
-        ...s.apps.filter((a) => !a.builtIn).map((a) => appBadgeItem(a, ui)),
-        { key: "add", node: <AddTile />, act: () => ui.openAddApp() },
+        ...s.apps.slice(0, 10).map((a) => appBadgeItem(a, ui)),
+        {
+          key: "add",
+          node: <AddTile />,
+          act: () => ui.openAddApp(),
+        } as Item,
       ],
     },
   ].filter((x) => x.items.length > 0);
@@ -304,30 +368,42 @@ export function HomeScreen() {
   const scr = useScreen("home", {
     rows: 3 + shelves.length,
     cols: (r) =>
-      r === 0 ? 3 : r === 1 ? TABS.length : r === 2 ? 2 : shelves[r - 3].items.length,
+      r === 0
+        ? 3
+        : r === 1
+          ? TABS.length
+          : r === 2
+            ? 2
+            : shelves[r - 3].items.length,
     enter: (r, c) => {
       if (scr.baseEnter(r, c)) return;
       if (r === 2) {
-        const hero = heroes[slide];
+        const h = heroes[Math.min(slide, heroes.length - 1)];
+        if (!h) return;
         if (c === 0) {
-          ui.playMedia(hero);
+          if (h.kind === "film") ui.playFilm(h.film);
+          else ui.openShow(h.show);
         } else {
-          const listed = s.favMedia.includes(hero.id);
-          d({ type: "favMedia", id: hero.id });
-          ui.toast(
-            listed ? `Removed ${hero.title} from Watchlist` : `Added ${hero.title} to Watchlist`,
-            "star"
-          );
+          const id = h.kind === "film" ? h.film.id : h.show.id;
+          const title = h.kind === "film" ? h.film.title : h.show.name;
+          const was = s.favMedia.includes(id);
+          d({ type: "favMedia", id });
+          ui.toast(was ? `Removed ${title} from Watchlist` : `Added ${title} to Watchlist`, "star");
         }
         return;
       }
       shelves[r - 3]?.items[c]?.act();
     },
     edge: (r, _c, dir) => {
-      if (r === 2) {
-        if (dir === "left") setSlide((v) => (v + heroes.length - 1) % heroes.length);
-        if (dir === "right") setSlide((v) => (v + 1) % heroes.length);
-        sfx("move");
+      if (r === 2 && heroes.length > 1) {
+        setSlide((v) =>
+          dir === "left"
+            ? (v + heroes.length - 1) % heroes.length
+            : dir === "right"
+              ? (v + 1) % heroes.length
+              : v
+        );
+        if (dir === "left" || dir === "right") sfx("move");
       }
     },
     onMenu: (r, c) => {
@@ -338,12 +414,16 @@ export function HomeScreen() {
   const heroFocused = scr.active && scr.nav.r === 2;
 
   useEffect(() => {
-    if (!scr.active || heroFocused) return;
-    const t = setInterval(() => setSlide((v) => (v + 1) % heroes.length), 8000);
+    if (!scr.active || heroFocused || heroes.length < 2) return;
+    const t = setInterval(
+      () => setSlide((v) => (v + 1) % heroes.length),
+      8000
+    );
     return () => clearInterval(t);
   }, [scr.active, heroFocused, slide, heroes.length]);
 
-  const listed = s.favMedia.includes(heroes[slide].id);
+  const hero = heroes[Math.min(slide, Math.max(0, heroes.length - 1))];
+  const heroId = hero ? (hero.kind === "film" ? hero.film.id : hero.show.id) : "";
 
   return (
     <ScreenBody
@@ -353,20 +433,30 @@ export function HomeScreen() {
       hover={scr.nav.set}
       rowOffset={3}
     >
-      <Hero
-        m={heroes[slide]}
-        slide={slide}
-        total={heroes.length}
-        focus={scr.focus}
-        hover={scr.nav.set}
-        onPlay={() => ui.playMedia(heroes[slide])}
-        onList={() => {
-          d({ type: "favMedia", id: heroes[slide].id });
-          ui.toast(listed ? "Removed from Watchlist" : "Added to Watchlist", "star");
-        }}
-        listed={listed}
-        paused={heroFocused || !scr.active}
-      />
+      {hero ? (
+        <Hero
+          item={hero}
+          slide={slide}
+          total={heroes.length}
+          focus={scr.focus}
+          hover={scr.nav.set}
+          onPrimary={() =>
+            hero.kind === "film" ? ui.playFilm(hero.film) : ui.openShow(hero.show)
+          }
+          onList={() => {
+            const id = hero.kind === "film" ? hero.film.id : hero.show.id;
+            const was = s.favMedia.includes(id);
+            d({ type: "favMedia", id });
+            ui.toast(was ? "Removed from Watchlist" : "Added to Watchlist", "star");
+          }}
+          listed={s.favMedia.includes(heroId)}
+          paused={heroFocused || !scr.active}
+        />
+      ) : (
+        <div className="mx-12 mt-2 h-[24rem] overflow-hidden rounded-2xl ring-1 ring-white/10">
+          <div className="shimmer h-full w-full" />
+        </div>
+      )}
     </ScreenBody>
   );
 }
@@ -386,7 +476,7 @@ export function AppsScreen() {
     if (ca !== cb) return ca - cb;
     return a.name.localeCompare(b.name);
   });
-  const nCells = ordered.length + 1; // + Add tile
+  const nCells = ordered.length + 1;
   const gridRows = Math.ceil(nCells / APP_COLS);
 
   const scr = useScreen("apps", {
@@ -418,18 +508,15 @@ export function AppsScreen() {
       rowOffset={2}
     >
       <div className="rise px-12 pt-1">
-        <div className="mb-4 flex items-center gap-3">
-          <span className="h-4 w-1 rounded-full" style={{ background: "var(--accent)" }} />
-          <h2 className="font-display text-[1.05rem] font-bold tracking-wide text-slate-100">
-            Your Apps
-          </h2>
-          <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-            {ordered.length} installed · Enter launches · ⇧M options
-          </span>
-        </div>
+        <SectionHeader
+          title="Your Apps"
+          kicker={`${ordered.length} installed · Enter launches · ⇧M options`}
+        />
         <div
           className="grid gap-x-6 gap-y-7"
-          style={{ gridTemplateColumns: `repeat(${APP_COLS}, minmax(0, 1fr))` }}
+          style={{
+            gridTemplateColumns: `repeat(${APP_COLS}, minmax(0, 1fr))`,
+          }}
         >
           {ordered.map((a, i) => (
             <Cell
@@ -461,23 +548,26 @@ export function AppsScreen() {
   );
 }
 
-/* ------------------------------- LIVE ------------------------------ */
+/* ------------------------------ TONIGHT ---------------------------- */
 
-export function LiveScreen() {
+export function TonightScreen() {
   const ui = useUI();
-  const gridRows = Math.ceil(CHANNELS.length / LIVE_COLS);
+  const cat = useCatalog();
+  const items = cat.tonight;
+  const rows = items.length ? Math.ceil(items.length / GRID_COLS) : 0;
 
-  const scr = useScreen("live", {
-    rows: 2 + gridRows,
+  const scr = useScreen("tonight", {
+    rows: 2 + Math.max(rows, 1),
     cols: (r) => {
       if (r === 0) return 3;
       if (r === 1) return TABS.length;
-      return Math.max(1, Math.min(LIVE_COLS, CHANNELS.length - (r - 2) * LIVE_COLS));
+      if (!rows) return 0;
+      return Math.max(1, Math.min(GRID_COLS, items.length - (r - 2) * GRID_COLS));
     },
     enter: (r, c) => {
       if (scr.baseEnter(r, c)) return;
-      const idx = (r - 2) * LIVE_COLS + c;
-      if (CHANNELS[idx]) ui.playLive(CHANNELS[idx]);
+      const idx = (r - 2) * GRID_COLS + c;
+      if (items[idx]) ui.openEpisode(items[idx]);
     },
   });
 
@@ -490,36 +580,50 @@ export function LiveScreen() {
       rowOffset={2}
     >
       <div className="rise px-12 pt-1">
-        <div className="mb-4 flex items-center gap-3">
-          <span className="flex items-center gap-2 rounded-md bg-red-600/90 px-2 py-1 text-[0.65rem] font-bold tracking-[0.18em] text-white">
-            <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-white" />
-            LIVE
-          </span>
-          <h2 className="font-display text-[1.05rem] font-bold tracking-wide text-slate-100">
-            Channels on now
-          </h2>
-          <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-            ← → surfs channels while watching
-          </span>
-        </div>
-        <div
-          className="grid gap-6"
-          style={{ gridTemplateColumns: `repeat(${LIVE_COLS}, minmax(0, 1fr))` }}
-        >
-          {CHANNELS.map((ch, i) => (
-            <Cell
-              key={ch.id}
-              r={2 + Math.floor(i / LIVE_COLS)}
-              c={i % LIVE_COLS}
-              focus={scr.focus}
-              hover={scr.nav.set}
-              onClick={() => ui.playLive(ch)}
-              className="justify-self-start"
-            >
-              <ChannelCard ch={ch} />
-            </Cell>
-          ))}
-        </div>
+        <SectionHeader
+          title="On Tonight"
+          kicker={
+            items.length
+              ? `${items.length} real episodes airing today · TVMaze`
+              : "Live broadcast schedule"
+          }
+          badge={
+            <span className="flex items-center gap-1.5 rounded-md bg-red-600/90 px-2 py-1 text-[0.65rem] font-bold tracking-[0.18em] text-white">
+              <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-white" />
+              LIVE
+            </span>
+          }
+        />
+        {items.length > 0 ? (
+          <div
+            className="grid gap-6"
+            style={{
+              gridTemplateColumns: `repeat(${GRID_COLS}, minmax(0, 1fr))`,
+            }}
+          >
+            {items.map((ep, i) => (
+              <Cell
+                key={ep.id}
+                r={2 + Math.floor(i / GRID_COLS)}
+                c={i % GRID_COLS}
+                focus={scr.focus}
+                hover={scr.nav.set}
+                onClick={() => ui.openEpisode(ep)}
+                className="justify-self-start"
+              >
+                <EpisodeCard ep={ep} />
+              </Cell>
+            ))}
+          </div>
+        ) : cat.loading ? (
+          <div className="grid gap-6" style={{ gridTemplateColumns: `repeat(${GRID_COLS}, minmax(0, 1fr))` }}>
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="shimmer h-[12.5rem] rounded-xl" />
+            ))}
+          </div>
+        ) : (
+          <EmptyNote text="Tonight's schedule hasn't loaded — likely no network connection right now. Everything else (your apps, films, saved progress) still works. Press F5 or revisit to retry." />
+        )}
       </div>
     </ScreenBody>
   );
@@ -527,40 +631,31 @@ export function LiveScreen() {
 
 /* --------------------------- MOVIES / SHOWS ------------------------ */
 
-function MediaScreen({ tab }: { tab: "movies" | "shows" }) {
+export function MoviesScreen() {
   const ui = useUI();
-  const { s } = useStore();
-  const kind = tab === "movies" ? "movie" : "show";
-  const all = MEDIA.filter((m) => m.type === kind);
-  const featured = all.slice(0, 4);
+  const cat = useCatalog();
 
-  const shelves: Shelf[] = [
+  const shelves = [
     {
-      title: tab === "movies" ? "Featured Films" : "Spotlight Series",
-      kicker: "In the spotlight",
-      items: featured.map(
-        (m): Item => ({
-          key: "fw-" + m.id,
-          node: <Poster m={m} wide />,
-          act: () => ui.openMedia(m),
-        })
-      ),
+      title: "Real Cinema — Stream Free",
+      kicker: "Public-domain features · press Enter, then Play",
+      items: cat.films.map((f) => filmItem(f, ui)),
     },
     {
-      title: tab === "movies" ? "All Movies" : "All Shows",
-      kicker: `${all.length} titles`,
-      items: all.map((m) => mediaItem(m, ui)),
-    },
-    {
-      title: "On Your Watchlist",
-      items: all.filter((m) => s.favMedia.includes(m.id)).map((m) => mediaItem(m, ui)),
+      title: "Acclaimed Films",
+      kicker: "Live metadata · Wikipedia",
+      items: cat.acclaimed.map((w) => wikiItem(w, ui)),
     },
   ].filter((x) => x.items.length > 0);
 
-  const scr = useScreen(tab, {
-    rows: 2 + shelves.length,
-    cols: (r) =>
-      r === 0 ? 3 : r === 1 ? TABS.length : shelves[r - 2].items.length,
+  const scr = useScreen("movies", {
+    rows: 2 + Math.max(shelves.length, 1),
+    cols: (r) => {
+      if (r === 0) return 3;
+      if (r === 1) return TABS.length;
+      const sh = shelves[r - 2];
+      return sh ? sh.items.length : 0;
+    },
     enter: (r, c) => {
       if (scr.baseEnter(r, c)) return;
       shelves[r - 2]?.items[c]?.act();
@@ -574,15 +669,75 @@ function MediaScreen({ tab }: { tab: "movies" | "shows" }) {
       focus={scr.focus}
       hover={scr.nav.set}
       rowOffset={2}
-    />
+    >
+      {cat.loading && !shelves.length && (
+        <div className="pt-2">
+          <ShelfSkeleton />
+          <ShelfSkeleton delay={120} />
+        </div>
+      )}
+    </ScreenBody>
   );
 }
 
-export function MoviesScreen() {
-  return <MediaScreen tab="movies" />;
-}
 export function ShowsScreen() {
-  return <MediaScreen tab="shows" />;
+  const ui = useUI();
+  const cat = useCatalog();
+
+  const byGenre = new Map<string, TvShow[]>();
+  for (const x of cat.shows) {
+    const g = x.genres[0] ?? "Series";
+    byGenre.set(g, [...(byGenre.get(g) ?? []), x].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0)));
+  }
+  const genres = [...byGenre.keys()].sort(
+    (a, b) => (byGenre.get(b)?.length ?? 0) - (byGenre.get(a)?.length ?? 0)
+  );
+
+  const shelves = [
+    ...genres.map((g) => ({
+      title: g,
+      kicker: `${byGenre.get(g)?.length ?? 0} shows`,
+      items: (byGenre.get(g) ?? []).slice(0, 12).map((x) => showItem(x, ui)),
+    })),
+    {
+      title: "All Shows",
+      kicker: `${cat.shows.length} titles · live from TVMaze`,
+      items: [...cat.shows]
+        .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+        .map((x) => showItem(x, ui)),
+    },
+  ].filter((x) => x.items.length > 0);
+
+  const scr = useScreen("shows", {
+    rows: 2 + Math.max(shelves.length, 1),
+    cols: (r) => {
+      if (r === 0) return 3;
+      if (r === 1) return TABS.length;
+      const sh = shelves[r - 2];
+      return sh ? sh.items.length : 0;
+    },
+    enter: (r, c) => {
+      if (scr.baseEnter(r, c)) return;
+      shelves[r - 2]?.items[c]?.act();
+    },
+  });
+
+  return (
+    <ScreenBody
+      chrome={scr.chrome}
+      shelves={shelves}
+      focus={scr.focus}
+      hover={scr.nav.set}
+      rowOffset={2}
+    >
+      {cat.loading && !shelves.length && (
+        <div className="pt-2">
+          <ShelfSkeleton />
+          <ShelfSkeleton delay={120} />
+        </div>
+      )}
+    </ScreenBody>
+  );
 }
 
 /* ------------------------------ LIBRARY ---------------------------- */
@@ -590,24 +745,49 @@ export function ShowsScreen() {
 export function LibraryScreen() {
   const { s } = useStore();
   const ui = useUI();
+  const cat = useCatalog();
 
   const favAppItems = s.favApps
     .map((id) => s.apps.find((a) => a.id === id))
     .filter((a): a is AppDef => !!a)
     .map((a) => appBadgeItem(a, ui));
 
-  const watchItems = s.favMedia
-    .map((id) => MEDIA.find((m) => m.id === id))
-    .filter((m): m is MediaItem => !!m)
-    .map((m) => mediaItem(m, ui));
+  const watchItems: Item[] = s.favMedia
+    .map((id) => {
+      const f = cat.films.find((x) => x.id === id);
+      if (f) return filmItem(f, ui);
+      const sh = cat.shows.find((x) => x.id === id);
+      if (sh) return showItem(sh, ui);
+      const w = cat.acclaimed.find((x) => x.id === id);
+      if (w) return wikiItem(w, ui);
+      return null;
+    })
+    .filter((x): x is Item => !!x);
 
   const recentItems: Item[] = s.recents
     .slice(0, 8)
     .map((r): Item | null => {
+      const f = cat.films.find((x) => x.id === r.id);
+      if (f) {
+        const t = s.mediaProgress[f.id];
+        return {
+          key: "rw-" + f.id,
+          node: (
+            <WideCard
+              title={f.title}
+              sub={`Film · ${f.year}${t ? ` · ${Math.round((t / (f.runtimeMin * 60)) * 100)}% watched` : ""}`}
+              bg={grad(hashStr(f.id) % 360)}
+              img={f.img}
+              progress={t ? (t / (f.runtimeMin * 60)) * 100 : undefined}
+            />
+          ),
+          act: () => ui.playFilm(f),
+        };
+      }
       const app = s.apps.find((a) => a.id === r.id);
       if (app)
         return {
-          key: "rw-" + app.id + r.ts,
+          key: "rw-" + app.id,
           node: (
             <WideCard
               title={app.name}
@@ -620,39 +800,28 @@ export function LibraryScreen() {
           act: () => ui.openApp(app),
           ctx: () => ui.openAppOptions(app),
         };
-      const m = MEDIA.find((x) => x.id === r.id);
-      if (m)
-        return {
-          key: "rw-" + m.id + r.ts,
-          node: (
-            <WideCard
-              title={m.title}
-              sub={`${m.genre} · ${m.year}`}
-              bg={grad(m.hue)}
-              img={m.backdrop}
-              progress={
-                s.mediaProgress[m.id]
-                  ? (s.mediaProgress[m.id] / (m.duration * 60)) * 100
-                  : undefined
-              }
-            />
-          ),
-          act: () => ui.playMedia(m),
-        };
       return null;
     })
-    .filter((x): x is Item => x !== null);
+    .filter((x): x is Item => !!x);
 
   const allAppItems: Item[] = [
     ...s.apps.map((a) => appBadgeItem(a, ui)),
     { key: "add", node: <AddTile />, act: () => ui.openAddApp() },
   ];
 
-  const shelves: Shelf[] = [
+  const shelves = [
     { title: "Favorite Apps", items: favAppItems },
     { title: "Watchlist", items: watchItems },
-    { title: "Recently Opened", kicker: "Last 16 launches", items: recentItems },
-    { title: "All Apps", kicker: `${s.apps.length} total`, items: allAppItems },
+    {
+      title: "Recently Opened",
+      kicker: "Real launch history",
+      items: recentItems,
+    },
+    {
+      title: "All Apps",
+      kicker: `${s.apps.length} total`,
+      items: allAppItems,
+    },
   ].filter((x) => x.items.length > 0);
 
   const scr = useScreen("library", {
@@ -678,3 +847,5 @@ export function LibraryScreen() {
     />
   );
 }
+
+export { appTileItem };

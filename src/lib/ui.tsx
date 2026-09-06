@@ -1,14 +1,23 @@
 import { createContext, useContext } from "react";
-import type { AppDef, Channel, MediaItem, TabId } from "../data";
+import type {
+  AppDef,
+  PdFilm,
+  TabId,
+  TonightItem,
+  TvShow,
+  WikiFilm,
+} from "../data";
 
 export type Layer =
   | null
   | { type: "search"; seed?: string }
   | { type: "settings" }
   | { type: "help" }
-  | { type: "details"; media: MediaItem }
-  | { type: "player"; media: MediaItem }
-  | { type: "live"; channel: Channel }
+  | { type: "film"; film: PdFilm }
+  | { type: "show"; show: TvShow }
+  | { type: "episode"; ep: TonightItem }
+  | { type: "wiki"; wiki: WikiFilm }
+  | { type: "player"; film: PdFilm }
   | { type: "appOptions"; app: AppDef }
   | { type: "addApp"; app?: AppDef }
   | { type: "launch"; app: AppDef }
@@ -22,9 +31,11 @@ export interface UIApi {
   close: () => void;
   toast: (msg: string, icon?: string) => void;
   openApp: (a: AppDef) => void;
-  openMedia: (m: MediaItem) => void;
-  playMedia: (m: MediaItem) => void;
-  playLive: (c: Channel) => void;
+  openFilm: (f: PdFilm) => void;
+  openShow: (s: TvShow) => void;
+  openEpisode: (e: TonightItem) => void;
+  openWiki: (w: WikiFilm) => void;
+  playFilm: (f: PdFilm) => void;
   openSearch: (seed?: string) => void;
   openSettings: () => void;
   openAddApp: (a?: AppDef) => void;
